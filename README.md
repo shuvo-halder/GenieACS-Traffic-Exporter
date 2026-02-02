@@ -175,10 +175,13 @@ rate(genieacs_rx_bytes{device="ONU12345"}[5m])
 
 ---
 
+<!--
 ## Future Improvements (Optional)
 
 * Per-interface name instead of `ppp/ip/wlan`
 * Device metadata labels (model, serial, OLT)
 * Authentication support for GenieACS
 * Caching for large device counts
+
+-->
 
