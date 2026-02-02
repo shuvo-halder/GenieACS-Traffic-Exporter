@@ -1,0 +1,7 @@
+scrape_configs:
+
+  # GenieACS
+  - job_name: 'genieacs'
+    static_configs:
+      - targets: ['localhost:9105']
+
