@@ -182,15 +182,3 @@ rate(genieacs_rx_bytes{device="ONU12345"}[5m])
 * Authentication support for GenieACS
 * Caching for large device counts
 
----
-
-## License
-
-MIT License – free to use, modify, and distribute.
-
-
-* Optimize for **large GenieACS deployments**
-* Add **ONU/OLT labels**
-* Convert this into a **systemd service**
-
-Just tell me 🔥
