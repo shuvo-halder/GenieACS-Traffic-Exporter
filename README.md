@@ -70,7 +70,7 @@ genieacs_tx_bytes{device="ONU12345",iface="ppp"} 987654321
 * Prometheus
 * Grafana (optional but recommended)
 
-### Installation 
+## Installation Guide
 ```bash
 git clone https://github.com/shuvo-halder/GenieACS-Traffic-Exporter.git
 
