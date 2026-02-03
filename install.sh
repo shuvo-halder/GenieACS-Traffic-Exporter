@@ -63,7 +63,7 @@ case "$1" in
       echo "Usage: exporter set-url <new-url>"
       exit 1
     fi
-    sudo sed -i "s|^Environment=.*GENIEACS_URL=.*|Environment=\"GENIEACS_URL=$2\"|" /etc/systemd/system/$SERVICE.service
+    sudo sed -i "s|^Environment=.*GENIEACS_URL=.*|Environment=GENIEACS_URL=$2|" /etc/systemd/system/$SERVICE.service
     sudo systemctl daemon-reload
     sudo systemctl restart $SERVICE
     echo "URL updated to $2"
