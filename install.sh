@@ -22,3 +22,10 @@ sudo cp -r exporter.service $SERVICE_FILE
 sudo systemctl daemon-reload
 sudo systemctl enable $APP_NAME
 
+echo "===> Creating exporter command..."
+echo "#!/bin/bash
+systemctl \$1 $APP_NAME" | sudo tee /usr/bin/exporter > /dev/null
+sudo chmod +x /usr/bin/exporter
+
+echo "=== Installation complete..."
+echo "Use: exporter start | stop | status | logs"
