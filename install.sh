@@ -82,5 +82,5 @@ EOF
 
 sudo chmod +x /usr/bin/exporter
 
-echo "===--- Installation complete ---==="
-echo "Use: exporter start | stop | status | restart | logs | set-url <new-url>
+echo "=== Installation complete ==="
+echo "Use: exporter start | stop | status | restart | logs | set-url <new-url>"
