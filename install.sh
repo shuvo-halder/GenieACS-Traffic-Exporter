@@ -14,8 +14,11 @@ sudo rm -rf $INSTALL_DIR
 sudo mkdir -p $INSTALL_DIR
 sudo cp -r exporter.py requirements.txt $INSTALL_DIR
 
-echo "===> Installing Python Package..."
-pip3 install -r $INSTALL_DIR/requirements.txt
+echo "===> Creating virtual environment..."
+python3 -m venv $INSTALL_DIR/venv
+source $INSTALL_DIR/venv/bin/activate
+pip install -r $INSTALL_DIR/requirements.txt
+deactivate
 
 echo "===> Installing systemd service..."
 sudo cp -r exporter.service $SERVICE_FILE
