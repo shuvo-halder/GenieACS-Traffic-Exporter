@@ -3,11 +3,11 @@ Description=GenieACS Prometheus Exporter
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/env python3 /opt/genieacs-exporter/exporter.py
+ExecStart=/opt/genieacs-exporter/venv/bin/python /opt/genieacs-exporter/exporter.py
 WorkingDirectory=/opt/genieacs-exporter
 Restart=always
-User=nobody
-Group=nogroup
+User=genieacs
+Group=genieacs
 StandardOutput=journal
 StandardError=journal
 

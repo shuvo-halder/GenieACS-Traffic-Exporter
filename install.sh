@@ -4,10 +4,17 @@ set -e
 APP_NAME="genieacs-exporter"
 INSTALL_DIR="/opt/$APP_NAME"
 SERVICE_FILE="/etc/systemd/system/$APP_NAME.service"
+SERVICE_USER="genieacs"
 
 echo "===> Installing dependencies..."
 sudo apt update
-sudo apt install -y python3 python3-pip git
+sudo apt install -y python3 python3-venv git
+
+if id "$SERVICE_USER" &>/dev/null;then
+    echo "User $SERVICE_USER already exists, skipping creation."
+else
+    sudo useradd -r -s /bin/false $SERVICE_USER
+fi
 
 echo "===> Coppying files..."
 sudo rm -rf $INSTALL_DIR
@@ -19,6 +26,8 @@ python3 -m venv $INSTALL_DIR/venv
 source $INSTALL_DIR/venv/bin/activate
 pip install -r $INSTALL_DIR/requirements.txt
 deactivate
+
+sudo chown -R $SERVICE_USER:$SERVICE_USER $INSTALL_DIR
 
 echo "===> Installing systemd service..."
 sudo cp -r exporter.service $SERVICE_FILE
