@@ -1,0 +1,15 @@
+[Unit]
+Description=GenieACS Prometheus Exporter
+After=network.target
+
+[Service]
+ExecStart=/opt/genieacs-exporter/venv/bin/python /opt/genieacs-exporter/exporter.py
+WorkingDirectory=/opt/genieacs-exporter
+Restart=always
+User=genieacs
+Group=genieacs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

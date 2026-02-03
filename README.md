@@ -70,31 +70,34 @@ genieacs_tx_bytes{device="ONU12345",iface="ppp"} 987654321
 * Prometheus
 * Grafana (optional but recommended)
 
-### Python Dependencies
-
+## Installation Guide
 ```bash
-pip install flask requests
+git clone https://github.com/shuvo-halder/GenieACS-Traffic-Exporter.git
+
+cd GenieACS-Traffic-Exporter
+
+chmod +x install.sh
+
+./install.sh
 ```
 
 ---
 
 ## Configuration
 
-Edit the exporter file and update GenieACS URL:
+```bash
+exporter set-url http://192.168.50.10:7557/devices
 
-```python
-GENIEACS_URL = "http://192.168.10.20:7557/devices"
-TIMEOUT = 5
 ```
 
 > ⚠️ Ensure the GenieACS server is reachable from this exporter host.
 
 ---
 
-## Running the Exporter
+## Run the Exporter
 
 ```bash
-python3 exporter.py
+exporter start
 ```
 
 The exporter will start on:
@@ -107,6 +110,17 @@ Test it:
 
 ```bash
 curl http://localhost:9105/metrics
+```
+
+## Exporter status and logs
+Exporter status
+```bash
+exporter status
+```
+
+Exporter logs
+```bash
+exporter logs
 ```
 
 ---
@@ -175,10 +189,13 @@ rate(genieacs_rx_bytes{device="ONU12345"}[5m])
 
 ---
 
+<!--
 ## Future Improvements (Optional)
 
 * Per-interface name instead of `ppp/ip/wlan`
 * Device metadata labels (model, serial, OLT)
 * Authentication support for GenieACS
 * Caching for large device counts
+
+-->
 

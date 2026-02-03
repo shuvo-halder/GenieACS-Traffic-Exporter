@@ -1,9 +1,10 @@
 from flask import Flask, Response
 import requests
+import os
 
 # GENIEACS_URL = "GenieACS ip or server: port"
-GENIEACS_URL = "http://192.168.30.40:7557/devices"
-TIMEOUT = 5
+GENIEACS_URL = os.getenv("GENIEACS_URL", "http://127.0.0.1:7557/devices")
+TIMEOUT = int(os.getenv("GENIEACS_TIMEOUT", "5"))
 
 app = Flask(__name__)
 
@@ -71,8 +72,12 @@ def metrics():
                 rx = safe_get(base, ["EthernetBytesReceived"]) or safe_get(base, ["TotalBytesReceived"])
                 tx = safe_get(base, ["EthernetBytesSent"]) or safe_get(base, ["TotalBytesSent"])
 
-                lines.append(f'genieacs_rx_bytes{{device="{device_id}",iface="{label}"}} {rx}')
-                lines.append(f'genieacs_tx_bytes{{device="{device_id}",iface="{label}"}} {tx}')
+                lines.append(
+                    f'genieacs_rx_bytes{{device="{device_id}",iface="{label}",ip="{d.get("IPAddress","unknown")}",name="{d.get("DeviceName","router")}"}} {rx}'
+                )
+                lines.append(
+                    f'genieacs_tx_bytes{{device="{device_id}",iface="{label}",ip="{d.get("IPAddress","unknown")}",name="{d.get("DeviceName","router")}"}} {tx}'
+                )
 
     return Response("\n".join(lines), mimetype="text/plain")
 
