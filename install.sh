@@ -53,6 +53,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable $APP_NAME
 
 echo "==> Creating exporter command..."
+sudo tee /usr/bin/exporter > /dev/null <<'EOS'
 #!/bin/bash
 SERVICE="genieacs-exporter"
 
