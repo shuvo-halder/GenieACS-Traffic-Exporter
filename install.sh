@@ -30,7 +30,24 @@ deactivate
 sudo chown -R $SERVICE_USER:$SERVICE_USER $INSTALL_DIR
 
 echo "===> Installing systemd service..."
-sudo cp -r exporter.service $SERVICE_FILE
+sudo tee $SERVICE_FILE > /dev/null <<EOF
+[Unit]
+Description=GenieACS Prometheus Exporter
+After=network.target
+
+[Service]
+ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/exporter.py
+WorkingDirectory=$INSTALL_DIR
+Restart=always
+User=$SERVICE_USER
+Group=$SERVICE_USER
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable $APP_NAME
 
