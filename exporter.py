@@ -1,9 +1,10 @@
 from flask import Flask, Response
 import requests
+import os
 
 # GENIEACS_URL = "GenieACS ip or server: port"
-GENIEACS_URL = "http://192.168.30.40:7557/devices"
-TIMEOUT = 5
+GENIEACS_URL = os.getenv("GENIEACS_URL", "http://127.0.0.1:7557/devices")
+TIMEOUT = int(os.getenv("GENIEACS_TIMEOUT", "5"))
 
 app = Flask(__name__)
 

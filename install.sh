@@ -36,6 +36,7 @@ Description=GenieACS Prometheus Exporter
 After=network.target
 
 [Service]
+Environment="GENIEACS_URL=http://127.0.0.1:7557/devices"
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/exporter.py
 WorkingDirectory=$INSTALL_DIR
 Restart=always
@@ -51,10 +52,34 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable $APP_NAME
 
-echo "===> Creating exporter command..."
-echo "#!/bin/bash
-systemctl \$1 $APP_NAME" | sudo tee /usr/bin/exporter > /dev/null
+echo "==> Creating exporter command..."
+#!/bin/bash
+SERVICE="genieacs-exporter"
+
+case "$1" in
+  set-url)
+    if [ -z "$2" ]; then
+      echo "Usage: exporter set-url <new-url>"
+      exit 1
+    fi
+    sudo sed -i "s|^Environment=.*GENIEACS_URL=.*|Environment=\"GENIEACS_URL=$2\"|" /etc/systemd/system/$SERVICE.service
+    sudo systemctl daemon-reload
+    sudo systemctl restart $SERVICE
+    echo "URL updated to $2"
+    ;;
+  start|stop|status|restart)
+    systemctl $1 $SERVICE
+    ;;
+  logs)
+    journalctl -u $SERVICE -f
+    ;;
+  *)
+    echo "Usage: exporter {start|stop|status|restart|logs|set-url <new-url>}"
+    ;;
+esac
+EOS
+
 sudo chmod +x /usr/bin/exporter
 
-echo "=== Installation complete..."
-echo "Use: exporter start | stop | status | logs"
+echo "===--- Installation complete ---==="
+echo "Use: exporter start | stop | status | restart | logs | set-url <new-url>
