@@ -53,7 +53,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable $APP_NAME
 
 echo "==> Creating exporter command..."
-sudo tee /usr/bin/exporter > /dev/null <<'EOS'
+sudo tee /usr/bin/exporter > /dev/null <<'EOF'
 #!/bin/bash
 SERVICE="genieacs-exporter"
 
@@ -78,7 +78,7 @@ case "$1" in
     echo "Usage: exporter {start|stop|status|restart|logs|set-url <new-url>}"
     ;;
 esac
-EOS
+EOF
 
 sudo chmod +x /usr/bin/exporter
 
