@@ -52,15 +52,15 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable $APP_NAME
 
-echo "==> Creating exporter command..."
-sudo tee /usr/bin/exporter > /dev/null <<'EOF'
+echo "==> Creating genieacs-exporter command..."
+sudo tee /usr/bin/genieacs-exporter > /dev/null <<'EOF'
 #!/bin/bash
 SERVICE="genieacs-exporter"
 
 case "$1" in
   set-url)
     if [ -z "$2" ]; then
-      echo "Usage: exporter set-url <new-url>"
+      echo "Usage: genieacs-exporter set-url <new-url>"
       exit 1
     fi
     sudo sed -i "s|^Environment=.*GENIEACS_URL=.*|Environment=GENIEACS_URL=$2|" /etc/systemd/system/$SERVICE.service
@@ -75,12 +75,12 @@ case "$1" in
     journalctl -u $SERVICE -f
     ;;
   *)
-    echo "Usage: exporter {start|stop|status|restart|logs|set-url <new-url>}"
+    echo "Usage: genieacs-exporter {start|stop|status|restart|logs|set-url <new-url>}"
     ;;
 esac
 EOF
 
-sudo chmod +x /usr/bin/exporter
+sudo chmod +x /usr/bin/genieacs-exporter
 
 echo "=== Installation complete ==="
-echo "Use: exporter start | stop | status | restart | logs | set-url <new-url>"
+echo "Use: genieacs-exporter start | stop | status | restart | logs | set-url <new-url>"
