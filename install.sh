@@ -24,6 +24,7 @@ sudo cp -r exporter.py requirements.txt $INSTALL_DIR
 echo "===> Creating virtual environment..."
 python3 -m venv $INSTALL_DIR/venv
 source $INSTALL_DIR/venv/bin/activate
+pip install --upgrade pip
 pip install -r $INSTALL_DIR/requirements.txt
 deactivate
 
@@ -36,12 +37,23 @@ Description=GenieACS Prometheus Exporter
 After=network.target
 
 [Service]
-Environment="GENIEACS_URL=http://127.0.0.1:7557/devices"
-ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/exporter.py
-WorkingDirectory=$INSTALL_DIR
-Restart=always
 User=$SERVICE_USER
 Group=$SERVICE_USER
+WorkingDirectory=$INSTALL_DIR
+
+Environment="GENIEACS_URL=http://127.0.0.1:7557/devices"
+Environment="GENIEACS_TIMEOUT=10"
+Environment="FETCH_INTERVAL=120"
+Environment="PAGE_LIMIT=1000"
+
+ExecStart=$INSTALL_DIR/venv/bin/gunicorn \\
+  --workers 4 \\
+  --bind 0.0.0.0:9105 \\
+  exporter:app
+
+Restart=always
+RestartSec=5
+
 StandardOutput=journal
 StandardError=journal
 
