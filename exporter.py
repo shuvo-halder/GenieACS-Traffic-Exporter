@@ -57,43 +57,52 @@ def fetch_devices():
 
 @app.route("/metrics")
 def metrics():
-    start = time.time()
-    lines = []
+    def generate():
+        start = time.time()
+        yield "# HELP genieacs_rx_bytes RX bytes\n"
+        yield "# TYPE genieacs_rx_bytes counter\n"
+        yield "# HELP genieacs_tx_bytes TX bytes\n"
+        yield "# TYPE genieacs_tx_bytes counter\n"
 
-    try:
-        devices = fetch_devices()
+        try:
+            skip = 0
+            total_devices = 0
 
-        lines.append("# HELP genieacs_rx_bytes RX bytes")
-        lines.append("# TYPE genieacs_rx_bytes counter")
-        lines.append("# HELP genieacs_tx_bytes TX bytes")
-        lines.append("# TYPE genieacs_tx_bytes counter")
+            while True:
+                r = requests.get(GENIEACS_URL, params={"limit": PAGE_LIMIT, "skip": skip}, timeout=TIMEOUT)
+                batch = r.json()
+                if not batch:
+                    break
 
-        for d in devices:
-            device_id = d.get("_id", "unknown")
-            for iface, rx, tx in extract_stats(d):
-                lines.append(f'genieacs_rx_bytes{{device_id="{device_id}",iface="{iface}"}} {rx}')
-                lines.append(f'genieacs_tx_bytes{{device_id="{device_id}",iface="{iface}"}} {tx}')
+                for d in batch:
+                    device_id = d.get("_id", "unknown")
+                    for iface, rx, tx in extract_stats(d):
+                        yield f'genieacs_rx_bytes{{device_id="{device_id}",iface="{iface}"}} {rx}\n'
+                        yield f'genieacs_tx_bytes{{device_id="{device_id}",iface="{iface}"}} {tx}\n'
 
-        duration = time.time() - start
+                skip += PAGE_LIMIT
+                total_devices += len(batch)
 
-        lines.append("# HELP genieacs_devices_total Total devices")
-        lines.append("# TYPE genieacs_devices_total gauge")
-        lines.append(f"genieacs_devices_total {len(devices)}")
+            duration = time.time() - start
+            yield f"# HELP genieacs_devices_total Total devices\n"
+            yield f"# TYPE genieacs_devices_total gauge\n"
+            yield f"genieacs_devices_total {total_devices}\n"
 
-        lines.append("# HELP genieacs_scrape_duration_seconds Scrape duration")
-        lines.append("# TYPE genieacs_scrape_duration_seconds gauge")
-        lines.append(f"genieacs_scrape_duration_seconds {duration}")
+            yield "# HELP genieacs_scrape_duration_seconds Scrape duration\n"
+            yield "# TYPE genieacs_scrape_duration_seconds gauge\n"
+            yield f"genieacs_scrape_duration_seconds {duration}\n"
 
-        lines.append("# HELP genieacs_last_scrape_success Last scrape success")
-        lines.append("# TYPE genieacs_last_scrape_success gauge")
-        lines.append("genieacs_last_scrape_success 1")
+            yield "# HELP genieacs_last_scrape_success Last scrape success\n"
+            yield "# TYPE genieacs_last_scrape_success gauge\n"
+            yield "genieacs_last_scrape_success 1\n"
 
-    except Exception:
-        lines.append("# HELP genieacs_last_scrape_success Last scrape success")
-        lines.append("# TYPE genieacs_last_scrape_success gauge")
-        lines.append("genieacs_last_scrape_success 0")
+        except Exception:
+            yield "# HELP genieacs_last_scrape_success Last scrape success\n"
+            yield "# TYPE genieacs_last_scrape_success gauge\n"
+            yield "genieacs_last_scrape_success 0\n"
 
-    return Response("\n".join(lines), mimetype="text/plain")
+    return Response(generate(), mimetype="text/plain")
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=9105)

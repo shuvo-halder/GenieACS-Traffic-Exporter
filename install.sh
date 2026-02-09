@@ -48,6 +48,7 @@ Environment="PAGE_LIMIT=1000"
 
 ExecStart=$INSTALL_DIR/venv/bin/gunicorn \\
   --workers 1 \\
+  --timeout 300 \
   --bind 0.0.0.0:9105 \\
   exporter:app
 
