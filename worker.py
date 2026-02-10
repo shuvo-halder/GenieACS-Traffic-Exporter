@@ -6,7 +6,7 @@ from cache import update_cache, mark_failed
 
 GENIEACS_URL = os.getenv("GENIEACS_URL")
 PAGE_LIMIT = int(os.getenv("PAGE_LIMIT", 1000))
-FETCH_INTERVAL = int(os.getenv("FETCH_INTERVAL", 300))
+INTERVAL = int(os.getenv("FETCH_INTERVAL", 300))
 TIMEOUT = 15
 CACHE_FILE = "/opt/genieacs-exporter/cache.json"
 
