@@ -3,37 +3,37 @@ set -e
 
 APP_NAME="genieacs-exporter"
 INSTALL_DIR="/opt/$APP_NAME"
-SERVICE_FILE="/etc/systemd/system/$APP_NAME.service"
+WEB_SERVICE="/etc/systemd/system/$APP_NAME.service"
+WORKER_SERVICE="/etc/systemd/system/$APP_NAME-worker.service"
 SERVICE_USER="genieacs"
 
 echo "===> Installing dependencies..."
-sudo apt update
-sudo apt install -y python3 python3-venv git
+apt update
+apt install -y python3 python3-venv git
 
-if id "$SERVICE_USER" &>/dev/null;then
-    echo "User $SERVICE_USER already exists, skipping creation."
+if id "$SERVICE_USER" &>/dev/null; then
+    echo "User $SERVICE_USER already exists"
 else
-    sudo useradd -r -s /bin/false $SERVICE_USER
+    useradd -r -s /bin/false $SERVICE_USER
 fi
 
-echo "===> Coppying files..."
-sudo rm -rf $INSTALL_DIR
-sudo mkdir -p $INSTALL_DIR
-sudo cp -r exporter.py requirements.txt $INSTALL_DIR
+echo "===> Copying files..."
+rm -rf $INSTALL_DIR
+mkdir -p $INSTALL_DIR
+
+cp -r app.py worker.py cache.py requirements.txt $INSTALL_DIR
 
 echo "===> Creating virtual environment..."
 python3 -m venv $INSTALL_DIR/venv
-source $INSTALL_DIR/venv/bin/activate
-pip install --upgrade pip
-pip install -r $INSTALL_DIR/requirements.txt
-deactivate
+$INSTALL_DIR/venv/bin/pip install --upgrade pip
+$INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt
 
-sudo chown -R $SERVICE_USER:$SERVICE_USER $INSTALL_DIR
+chown -R $SERVICE_USER:$SERVICE_USER $INSTALL_DIR
 
-echo "===> Installing systemd service..."
-sudo tee $SERVICE_FILE > /dev/null <<EOF
+echo "===> Installing worker service..."
+tee $WORKER_SERVICE > /dev/null <<EOF
 [Unit]
-Description=GenieACS Prometheus Exporter
+Description=GenieACS Exporter Background Worker
 After=network.target
 
 [Service]
@@ -41,16 +41,34 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 
-Environment="GENIEACS_URL=http://127.0.0.1:7557/devices"
-Environment="GENIEACS_TIMEOUT=10"
-Environment="FETCH_INTERVAL=120"
-Environment="PAGE_LIMIT=1000"
+Environment=GENIEACS_URL=http://127.0.0.1:7557/devices
+Environment=PAGE_LIMIT=1000
+Environment=FETCH_INTERVAL=300
+
+ExecStart=$INSTALL_DIR/venv/bin/python worker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "===> Installing web exporter service..."
+tee $WEB_SERVICE > /dev/null <<EOF
+[Unit]
+Description=GenieACS Prometheus Exporter
+After=network.target genieacs-exporter-worker.service
+
+[Service]
+User=$SERVICE_USER
+Group=$SERVICE_USER
+WorkingDirectory=$INSTALL_DIR
 
 ExecStart=$INSTALL_DIR/venv/bin/gunicorn \\
   --workers 1 \\
-  --timeout 300 \
+  --timeout 60 \\
   --bind 0.0.0.0:9105 \\
-  exporter:app
+  app:app
 
 Restart=always
 RestartSec=5
@@ -62,8 +80,10 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable $APP_NAME
+echo "===> Reloading systemd..."
+systemctl daemon-reload
+systemctl enable genieacs-exporter-worker
+systemctl enable genieacs-exporter
 
 echo "==> Creating genieacs-exporter command..."
 sudo tee /usr/bin/genieacs-exporter > /dev/null <<'EOF'
@@ -96,4 +116,6 @@ EOF
 sudo chmod +x /usr/bin/genieacs-exporter
 
 echo "=== Installation complete ==="
+echo "Use: genieacs-exporter-worker {start|stop|status|restart}"
+echo "---------------------------------------"
 echo "Use: genieacs-exporter start | stop | status | restart | logs | set-url <new-url>"
