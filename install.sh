@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+[ "$EUID" -ne 0 ] && echo "Run as root" && exit 1
 
 APP_NAME="genieacs-exporter"
 INSTALL_DIR="/opt/$APP_NAME"
@@ -86,7 +87,7 @@ systemctl enable genieacs-exporter-worker
 systemctl enable genieacs-exporter
 
 echo "==> Creating genieacs-exporter command..."
-sudo tee /usr/bin/genieacs-exporter > /dev/null <<'EOF'
+tee /usr/bin/genieacs-exporter > /dev/null <<'EOF'
 #!/bin/bash
 SERVICE="genieacs-exporter"
 
@@ -116,6 +117,4 @@ EOF
 sudo chmod +x /usr/bin/genieacs-exporter
 
 echo "=== Installation complete ==="
-echo "Use: genieacs-exporter-worker {start|stop|status|restart}"
-echo "---------------------------------------"
 echo "Use: genieacs-exporter start | stop | status | restart | logs | set-url <new-url>"
