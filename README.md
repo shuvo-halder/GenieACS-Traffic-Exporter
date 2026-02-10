@@ -86,7 +86,7 @@ chmod +x install.sh
 ## Configuration
 
 ```bash
-exporter set-url http://192.168.50.10:7557/devices
+genieacs-exporter set-url http://192.168.50.10:7557/devices
 
 ```
 
@@ -97,7 +97,7 @@ exporter set-url http://192.168.50.10:7557/devices
 ## Run the Exporter
 
 ```bash
-exporter start
+genieacs-exporter start
 ```
 
 The exporter will start on:
@@ -115,12 +115,12 @@ curl http://localhost:9105/metrics
 ## Exporter status and logs
 Exporter status
 ```bash
-exporter status
+genieacs-exporter status
 ```
 
 Exporter logs
 ```bash
-exporter logs
+genieacs-exporter logs
 ```
 
 ---
