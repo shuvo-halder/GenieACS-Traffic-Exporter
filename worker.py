@@ -1,12 +1,14 @@
 import time
 import requests
 import os
+import json
 from cache import update_cache, mark_failed
 
-GENIEACS_URL = os.getenv("GENIEACS_URL", "http://127.0.0.1:7557/devices")
-PAGE_LIMIT = 1000
-TIMEOUT = 10
-INTERVAL = 300   # 5 minutes
+GENIEACS_URL = os.getenv("GENIEACS_URL")
+PAGE_LIMIT = int(os.getenv("PAGE_LIMIT", 1000))
+FETCH_INTERVAL = int(os.getenv("FETCH_INTERVAL", 300))
+TIMEOUT = 15
+CACHE_FILE = "/opt/genieacs-exporter/cache.json"
 
 def safe_get(d, key):
     if isinstance(d, dict):

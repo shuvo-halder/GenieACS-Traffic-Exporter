@@ -22,7 +22,7 @@ fi
 echo "===> Copying files..."
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-
+touch $INSTALL_DIR/cache.json
 cp app.py worker.py cache.py requirements.txt "$INSTALL_DIR"
 
 echo "===> Creating virtual environment..."
@@ -48,6 +48,9 @@ WorkingDirectory=$INSTALL_DIR
 Environment=GENIEACS_URL=http://127.0.0.1:7557/devices
 Environment=PAGE_LIMIT=1000
 Environment=FETCH_INTERVAL=300
+
+StandardOutput=journal
+StandardError=journal
 
 ExecStart=$INSTALL_DIR/venv/bin/python worker.py
 Restart=always
