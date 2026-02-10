@@ -23,30 +23,47 @@ def get_path(d, path):
         d = d.get(p, {})
     return d if isinstance(d, dict) else {}
 
+# def extract_stats(device):
+#     stats = []
+
+#     wan = device.get("InternetGatewayDevice", {}).get("WANDevice", {})
+#     for _, wdev in wan.items():
+#         wcd = wdev.get("WANConnectionDevice", {})
+#         for _, conn_dev in wcd.items():
+
+#             for conn_type, iface in [
+#                 ("WANPPPConnection", "ppp"),
+#                 ("WANIPConnection", "ip"),
+#             ]:
+#                 conns = conn_dev.get(conn_type, {})
+#                 for _, conn in conns.items():
+#                     stats_block = conn.get("Stats", {})
+#                     if isinstance(stats_block, dict):
+#                         stats_block = stats_block.get("1", stats_block)
+
+#                     rx = safe_get(stats_block, "TotalBytesReceived")
+#                     tx = safe_get(stats_block, "TotalBytesSent")
+
+#                     if rx or tx:
+#                         stats.append((iface, rx or 0, tx or 0))
+
+#     return stats
+
 def extract_stats(device):
     stats = []
-
-    wan = device.get("InternetGatewayDevice", {}).get("WANDevice", {})
-    for _, wdev in wan.items():
-        wcd = wdev.get("WANConnectionDevice", {})
-        for _, conn_dev in wcd.items():
-
-            for conn_type, iface in [
-                ("WANPPPConnection", "ppp"),
-                ("WANIPConnection", "ip"),
-            ]:
-                conns = conn_dev.get(conn_type, {})
-                for _, conn in conns.items():
-                    stats_block = conn.get("Stats", {})
-                    if isinstance(stats_block, dict):
-                        stats_block = stats_block.get("1", stats_block)
-
-                    rx = safe_get(stats_block, "TotalBytesReceived")
-                    tx = safe_get(stats_block, "TotalBytesSent")
-
-                    if rx or tx:
-                        stats.append((iface, rx or 0, tx or 0))
-
+    paths = {
+        "ppp": ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANPPPConnection","1","Stats","1"],
+        "ip":  ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANIPConnection","1","Stats","1"],
+        "wlan":["InternetGatewayDevice","LANDevice","1","WLANConfiguration","1","Stats"]
+    }
+    for iface, path in paths.items():
+        base = get_path(device, path)
+        if not base:
+            continue
+        rx = safe_get(base, "EthernetBytesReceived") or safe_get(base, "TotalBytesReceived")
+        tx = safe_get(base, "EthernetBytesSent") or safe_get(base, "TotalBytesSent")
+        if rx or tx:
+            stats.append((iface, rx or 0, tx or 0))
     return stats
 
 

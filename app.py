@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, Response
 import time
 from cache import read_cache
