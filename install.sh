@@ -32,7 +32,6 @@ rm -rf "$WEB_SERVICE"
 rm -rf "$WORKER_SERVICE"
 systemctl daemon-reload
 mkdir -p "$INSTALL_DIR"
-touch $INSTALL_DIR/cache.json
 cp app.py worker.py cache.py requirements.txt "$INSTALL_DIR"
 
 echo "===> Creating virtual environment..."
