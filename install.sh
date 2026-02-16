@@ -46,8 +46,10 @@ Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 
 Environment=GENIEACS_URL=http://127.0.0.1:7557/devices
-Environment=PAGE_LIMIT=1000
-Environment=FETCH_INTERVAL=300
+Environment=PAGE_LIMIT=5000
+Environment=FETCH_INTERVAL=600
+
+LimitNOFILE=65536
 
 StandardOutput=journal
 StandardError=journal
@@ -75,7 +77,7 @@ WorkingDirectory=$INSTALL_DIR
 
 ExecStart=$INSTALL_DIR/venv/bin/gunicorn \\
   --workers 1 \\
-  --timeout 60 \\
+  --timeout 180 \\
   --bind 0.0.0.0:9105 \\
   app:app
 
