@@ -36,6 +36,9 @@ def extract_stats(device):
     for iface, path in paths.items():
         base = device
         for p in path:
+            if not isinstance (base, dict):
+                base = {}
+                break
             base = base.get(p, {})
         if not isinstance(base, dict):
             continue
