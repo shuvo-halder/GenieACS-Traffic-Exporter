@@ -13,6 +13,13 @@ echo "===> Installing dependencies..."
 apt update || true
 apt install -y python3 python3-venv git
 
+if command -v redis-server >/dev/null 2>&1; then
+    echo "Redis already installed!"
+else
+    apt install -y redis-server
+    systemctl enable --now redis
+fi
+
 if id "$SERVICE_USER" &>/dev/null; then
     echo "User $SERVICE_USER already exists"
 else
@@ -81,6 +88,7 @@ ExecStart=$INSTALL_DIR/venv/bin/gunicorn \\
   --bind 0.0.0.0:9105 \\
   app:app
 
+LimitNOFILE=65536
 Restart=always
 RestartSec=5
 

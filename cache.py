@@ -1,26 +1,22 @@
-import threading
+import redis
+import json
 import time
 
-lock = threading.Lock()
-
-CACHE = {
-    "metrics": "",
-    "device_count": 0,
-    "last_update": 0,
-    "success": 0
-}
+r = redis.Redis(host="localhost", port=6379, db=0)
 
 def update_cache(metrics, count):
-    with lock:
-        CACHE["metrics"] = metrics
-        CACHE["device_count"] = count
-        CACHE["last_update"] = time.time()
-        CACHE["success"] = 1
+    r.set("metrics", metrics)
+    r.set("device_count", count)
+    r.set("last_update", time.time())
+    r.set("success", 1)
 
 def mark_failed():
-    with lock:
-        CACHE["success"] = 0
+    r.set("success", 0)
 
 def read_cache():
-    with lock:
-        return CACHE.copy()
+    return {
+        "metrics": r.get("metrics").decode() if r.get("metrics") else "",
+        "device_count": int(r.get("device_count") or 0),
+        "last_update": float(r.get("last_update") or 0),
+        "success": int(r.get("success") or 0)
+    }
