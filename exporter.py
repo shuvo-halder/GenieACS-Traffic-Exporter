@@ -77,8 +77,8 @@ def metrics():
                 for d in batch:
                     device_id = d.get("_id", "unknown")
                     for iface, rx, tx in extract_stats(d):
-                        yield f'genieacs_rx_bytes{{device_id="{device_id}",iface="{iface}"}} {rx}\n'
-                        yield f'genieacs_tx_bytes{{device_id="{device_id}",iface="{iface}"}} {tx}\n'
+                        yield f'genieacs_rx_bytes{{device="{device_id}",iface="{iface}"}} {rx}\n'
+                        yield f'genieacs_tx_bytes{{device="{device_id}",iface="{iface}"}} {tx}\n'
 
                 skip += PAGE_LIMIT
                 total_devices += len(batch)
