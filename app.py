@@ -15,6 +15,11 @@ def metrics():
     output.append("# TYPE genieacs_cache_last_update gauge")
     output.append(f"genieacs_cache_last_update {cache['last_update']}")
 
+    output.append("# HELP genieacs_current_device Current processing device")
+    output.append("# TYPE genieacs_device_info gauge")
+    for dev_id in cache["device_id"]:
+        output.append(f'genieacs_current_devices{{device="{dev_id}"}} 1')
+
     output.append("# HELP genieacs_cache_success Cache success")
     output.append("# TYPE genieacs_cache_success gauge")
     output.append(f"genieacs_cache_success {cache['success']}")

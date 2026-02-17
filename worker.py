@@ -13,7 +13,8 @@ projection = {
     "_id": 1,
     "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Stats": 1,
     "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.Stats": 1,
-    "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.Stats": 1
+    "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1": 1,
+    "InternetGatewayDevice.LANDevice.1.WLANConfiguration.2": 1
 }
 
 def safe_get(d, key):
@@ -24,30 +25,96 @@ def safe_get(d, key):
         return v
     return 0
 
+# def extract_stats(device):
+#     stats = []
+
+#     paths = {
+#         "ppp": ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANPPPConnection","1","Stats","1"],
+#         "ip":  ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANIPConnection","1","Stats","1"],
+#         "wlan":["InternetGatewayDevice","LANDevice","1","WLANConfiguration","1","Stats"]
+#     }
+
+#     for iface, path in paths.items():
+#         base = device
+#         for p in path:
+#             if not isinstance (base, dict):
+#                 base = {}
+#                 break
+#             base = base.get(p, {})
+#         if not isinstance(base, dict):
+#             continue
+
+#         rx = safe_get(base, "EthernetBytesReceived") or safe_get(base, "TotalBytesReceived")
+#         tx = safe_get(base, "EthernetBytesSent") or safe_get(base, "TotalBytesSent")
+
+#         if rx or tx:
+#             stats.append((iface, rx or 0, tx or 0))
+
+#     return stats
+
+# def extract_stats(device):
+#     stats = []
+
+#     paths = [
+#         ("ppp", ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANPPPConnection","1"]),
+#         ("ip",  ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANIPConnection","1"]),
+#         ("wlan1",["InternetGatewayDevice","LANDevice","1","WLANConfiguration","1"]),
+#         ("wlan2",["InternetGatewayDevice","LANDevice","1","WLANConfiguration","2"]),
+#     ]
+
+#     for iface, base_path in paths:
+#         base = device
+#         for p in base_path:
+#             if not isinstance(base, dict):
+#                 base = {}
+#                 break
+#             base = base.get(p, {})
+
+#         if not isinstance(base, dict):
+#             continue
+
+#         stats_node = base.get("Stats", {})
+#         if "1" in stats_node:
+#             stats_node = stats_node.get("1", {})
+
+#         rx = (
+#             safe_get(stats_node, "EthernetBytesReceived")
+#             or safe_get(stats_node, "TotalBytesReceived")
+#             or safe_get(base, "TotalBytesReceived")
+#         )
+
+#         tx = (
+#             safe_get(stats_node, "EthernetBytesSent")
+#             or safe_get(stats_node, "TotalBytesSent")
+#             or safe_get(base, "TotalBytesSent")
+#         )
+
+#         if rx or tx:
+#             stats.append((iface, rx or 0, tx or 0))
+
+#     return stats
+
+
 def extract_stats(device):
     stats = []
 
-    paths = {
-        "ppp": ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANPPPConnection","1","Stats","1"],
-        "ip":  ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANIPConnection","1","Stats","1"],
-        "wlan":["InternetGatewayDevice","LANDevice","1","WLANConfiguration","1","Stats"]
-    }
+    wlan = device.get("InternetGatewayDevice", {}) \
+        .get("LANDevice", {}) \
+        .get("1", {}) \
+        .get("WLANConfiguration", {})
 
-    for iface, path in paths.items():
-        base = device
-        for p in path:
-            if not isinstance (base, dict):
-                base = {}
-                break
-            base = base.get(p, {})
-        if not isinstance(base, dict):
+    if not isinstance(wlan, dict):
+        return stats
+
+    for idx, cfg in wlan.items():
+        if not isinstance(cfg, dict):
             continue
 
-        rx = safe_get(base, "EthernetBytesReceived") or safe_get(base, "TotalBytesReceived")
-        tx = safe_get(base, "EthernetBytesSent") or safe_get(base, "TotalBytesSent")
+        rx = safe_get(cfg, "TotalBytesReceived")
+        tx = safe_get(cfg, "TotalBytesSent")
 
         if rx or tx:
-            stats.append((iface, rx or 0, tx or 0))
+            stats.append((f"wlan{idx}", rx or 0, tx or 0))
 
     return stats
 
@@ -65,6 +132,10 @@ def run_worker():
             lines.append("# TYPE genieacs_rx_bytes counter")
             lines.append("# HELP genieacs_tx_bytes TX bytes")
             lines.append("# TYPE genieacs_tx_bytes counter")
+
+            lines.append("# HELP genieacs_device_info Device information")
+            lines.append("# TYPE genieacs_device_info gauge")
+
 
             while True:
                 r = session.get(
@@ -95,11 +166,17 @@ def run_worker():
                             f'genieacs_tx_bytes{{device="{device_id}",iface="{iface}"}} {tx}'
                         )
 
+                    info = d.get("DeviceID", {})
+                    lines.append(
+                        f'genieacs_device_info{{device="{device_id}"}} 1'
+                    )
+
+
                 skip += PAGE_LIMIT
 
             lines.append(f"genieacs_devices_total {count}")
 
-            update_cache("\n".join(lines) + "\n", count)
+            update_cache("\n".join(lines) + "\n", count, device_id)
             print(f"[worker] updated cache: {count} devices")
 
         except Exception as e:
