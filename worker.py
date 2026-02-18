@@ -74,43 +74,43 @@ def extract_stats(device):
         if rx or tx:
             stats.append((f"wlan{idx}", rx or 0, tx or 0))
 
-    # -------- WAN IP --------
-    ip = device.get("InternetGatewayDevice", {}) \
-        .get("WANDevice", {}) \
-        .get("1", {}) \
-        .get("WANConnectionDevice", {}) \
-        .get("1", {}) \
-        .get("WANIPConnection", {})
+    # # -------- WAN IP --------
+    # ip = device.get("InternetGatewayDevice", {}) \
+    #     .get("WANDevice", {}) \
+    #     .get("1", {}) \
+    #     .get("WANConnectionDevice", {}) \
+    #     .get("1", {}) \
+    #     .get("WANIPConnection", {})
 
-    if isinstance(ip, dict):
-        for idx, cfg in ip.items():
-            if not isinstance(cfg, dict):
-                continue
+    # if isinstance(ip, dict):
+    #     for idx, cfg in ip.items():
+    #         if not isinstance(cfg, dict):
+    #             continue
 
-            rx = safe_get(cfg, "TotalBytesReceived")
-            tx = safe_get(cfg, "TotalBytesSent")
+    #         rx = safe_get(cfg, "TotalBytesReceived")
+    #         tx = safe_get(cfg, "TotalBytesSent")
 
-            if rx or tx:
-                stats.append((f"ip{idx}", rx or 0, tx or 0))
+    #         if rx or tx:
+    #             stats.append((f"ip{idx}", rx or 0, tx or 0))
     
-    # -------- WAN PPP --------
-    ppp = device.get("InternetGatewayDevice", {}) \
-        .get("WANDevice", {}) \
-        .get("1", {}) \
-        .get("WANConnectionDevice", {}) \
-        .get("1", {}) \
-        .get("WANPPPConnection", {})
+    # # -------- WAN PPP --------
+    # ppp = device.get("InternetGatewayDevice", {}) \
+    #     .get("WANDevice", {}) \
+    #     .get("1", {}) \
+    #     .get("WANConnectionDevice", {}) \
+    #     .get("1", {}) \
+    #     .get("WANPPPConnection", {})
 
-    if isinstance(ppp, dict):
-        for idx, cfg in ppp.items():
-            if not isinstance(cfg, dict):
-                continue
+    # if isinstance(ppp, dict):
+    #     for idx, cfg in ppp.items():
+    #         if not isinstance(cfg, dict):
+    #             continue
 
-            rx = safe_get(cfg, "TotalBytesReceived")
-            tx = safe_get(cfg, "TotalBytesSent")
+    #         rx = safe_get(cfg, "TotalBytesReceived")
+    #         tx = safe_get(cfg, "TotalBytesSent")
 
-            if rx or tx:
-                stats.append((f"ppp{idx}", rx or 0, tx or 0))
+    #         if rx or tx:
+    #             stats.append((f"ppp{idx}", rx or 0, tx or 0))
 
     return stats
 
