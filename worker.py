@@ -52,48 +52,6 @@ def safe_get(d, key):
 
 #     return stats
 
-# def extract_stats(device):
-#     stats = []
-
-#     paths = [
-#         ("ppp", ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANPPPConnection","1"]),
-#         ("ip",  ["InternetGatewayDevice","WANDevice","1","WANConnectionDevice","1","WANIPConnection","1"]),
-#         ("wlan1",["InternetGatewayDevice","LANDevice","1","WLANConfiguration","1"]),
-#         ("wlan2",["InternetGatewayDevice","LANDevice","1","WLANConfiguration","2"]),
-#     ]
-
-#     for iface, base_path in paths:
-#         base = device
-#         for p in base_path:
-#             if not isinstance(base, dict):
-#                 base = {}
-#                 break
-#             base = base.get(p, {})
-
-#         if not isinstance(base, dict):
-#             continue
-
-#         stats_node = base.get("Stats", {})
-#         if "1" in stats_node:
-#             stats_node = stats_node.get("1", {})
-
-#         rx = (
-#             safe_get(stats_node, "EthernetBytesReceived")
-#             or safe_get(stats_node, "TotalBytesReceived")
-#             or safe_get(base, "TotalBytesReceived")
-#         )
-
-#         tx = (
-#             safe_get(stats_node, "EthernetBytesSent")
-#             or safe_get(stats_node, "TotalBytesSent")
-#             or safe_get(base, "TotalBytesSent")
-#         )
-
-#         if rx or tx:
-#             stats.append((iface, rx or 0, tx or 0))
-
-#     return stats
-
 
 def extract_stats(device):
     stats = []
@@ -115,6 +73,44 @@ def extract_stats(device):
 
         if rx or tx:
             stats.append((f"wlan{idx}", rx or 0, tx or 0))
+
+    # -------- WAN IP --------
+    ip = device.get("InternetGatewayDevice", {}) \
+        .get("WANDevice", {}) \
+        .get("1", {}) \
+        .get("WANConnectionDevice", {}) \
+        .get("1", {}) \
+        .get("WANIPConnection", {})
+
+    if isinstance(ip, dict):
+        for idx, cfg in ip.items():
+            if not isinstance(cfg, dict):
+                continue
+
+            rx = safe_get(cfg, "TotalBytesReceived")
+            tx = safe_get(cfg, "TotalBytesSent")
+
+            if rx or tx:
+                stats.append((f"ip{idx}", rx or 0, tx or 0))
+    
+    # -------- WAN PPP --------
+    ppp = device.get("InternetGatewayDevice", {}) \
+        .get("WANDevice", {}) \
+        .get("1", {}) \
+        .get("WANConnectionDevice", {}) \
+        .get("1", {}) \
+        .get("WANPPPConnection", {})
+
+    if isinstance(ppp, dict):
+        for idx, cfg in ppp.items():
+            if not isinstance(cfg, dict):
+                continue
+
+            rx = safe_get(cfg, "TotalBytesReceived")
+            tx = safe_get(cfg, "TotalBytesSent")
+
+            if rx or tx:
+                stats.append((f"ppp{idx}", rx or 0, tx or 0))
 
     return stats
 
