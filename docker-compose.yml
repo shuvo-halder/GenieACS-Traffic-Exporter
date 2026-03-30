@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  genieacs-exporter:
+    build: .
+    image: genieacs-exporter:latest
+    container_name: genieacs-exporter
+    restart: unless-stopped
+    ports:
+      - "9410:9410"
+    environment:
+      # Set these in .env or override here
+      GENIEACS_API_URL: "${GENIEACS_API_URL:-http://genieacs_url:7557}"
+      POLL_INTERVAL: "${POLL_INTERVAL:-15}"
+      DEVICE_QUERY_FILTER: "${DEVICE_QUERY_FILTER:-{}}"
+      DEVICE_PARAM_PATHS: "${DEVICE_PARAM_PATHS:-InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived;InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent}"
+      ONLINE_THRESHOLD_SECONDS: "${ONLINE_THRESHOLD_SECONDS:-300}"
+      CONCURRENCY: "${CONCURRENCY:-200}"
+      BATCH_SIZE: "${BATCH_SIZE:-200}"
+      EXPORTER_PORT: "${EXPORTER_PORT:-9410}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      # Optional Redis persistence
+      # REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9410/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  monitoring:
+    driver: bridge
