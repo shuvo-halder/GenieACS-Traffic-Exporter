@@ -28,12 +28,31 @@ import aiohttp
 from aiohttp import ClientTimeout
 from prometheus_client import start_http_server, Gauge, REGISTRY
 import math
+import re
 
 # Optional Redis for persistence across restarts
 try:
     import aioredis
 except Exception:
     aioredis = None
+
+CANDIDATE_RX_PATHS = [
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesReceived",
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived",
+    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesReceived"
+]
+CANDIDATE_TX_PATHS = [
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesSent",
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent",
+    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesSent"
+]
+
+def find_param(params: Dict[str, Any], candidates: List[str]) -> Optional[int]:
+    for p in candidates:
+        v = extract_param_value(params, p)
+        if v is not None:
+            return v
+    return None
 
 # ---------------------------
 # Configuration via env vars
@@ -198,46 +217,28 @@ def is_online(device: Dict[str, Any]) -> bool:
         return False
     return (time.time() - ts) <= ONLINE_THRESHOLD_SECONDS
 
+def pattern_to_regex(pattern: str) -> re.Pattern:
+    # Convert wildcard '*' to '.*' and escape other chars
+    esc = re.escape(pattern)
+    esc = esc.replace(r"\*", ".*")
+    # match full key
+    return re.compile(r"^" + esc + r"$")
+
 def extract_param_value(params: Dict[str, Any], path_pattern: str) -> Optional[int]:
-    """
-    Support wildcard '*' in path segments. GenieACS parameters endpoint returns a dict of parameter objects.
-    We will search keys that match the pattern (simple wildcard matching).
-    Example pattern: InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived
-    """
-    if not params:
+    if not params or not path_pattern:
         return None
-    # Convert pattern to prefix and suffix segments for simple matching
-    # We'll treat '*' as match-any-segment (no dots inside segment)
-    pattern_segments = path_pattern.split(".")
+    regex = pattern_to_regex(path_pattern)
     candidates = []
     for key, val in params.items():
-        key_segments = key.split(".")
-        if len(key_segments) != len(pattern_segments):
-            # allow mismatch lengths by trying to match with '*' absorbing segments? Simpler: check if pattern segments with '*' can match variable segments
-            # We'll do a simple approach: match from end for suffix segments that are not '*'
-            pass
-        match = True
-        # We'll attempt to match by iterating pattern segments and key segments; '*' matches any single segment
-        if len(key_segments) != len(pattern_segments):
-            match = False
-        else:
-            for ps, ks in zip(pattern_segments, key_segments):
-                if ps == "*":
-                    continue
-                if ps != ks:
-                    match = False
-                    break
-        if match:
-            # val may be dict with "value" or raw
+        if regex.match(key):
             if isinstance(val, dict) and "value" in val:
                 candidates.append(safe_int(val["value"]))
             else:
                 candidates.append(safe_int(val))
-    # If no exact-length matches, try suffix match: last N segments must match where pattern has no leading '*'
+    # fallback: suffix match (existing behavior)
     if not candidates:
-        # fallback: find keys that endwith the non-wildcard suffix
         suffix_parts = []
-        for seg in reversed(pattern_segments):
+        for seg in reversed(path_pattern.split(".")):
             if seg == "*":
                 break
             suffix_parts.insert(0, seg)
@@ -249,14 +250,8 @@ def extract_param_value(params: Dict[str, Any], path_pattern: str) -> Optional[i
                         candidates.append(safe_int(val["value"]))
                     else:
                         candidates.append(safe_int(val))
-    if not candidates:
-        return None
-    # If multiple matches, pick the largest (likely aggregated) or the first non-null
     filtered = [c for c in candidates if c is not None]
-    if not filtered:
-        return None
-    return max(filtered)
-
+    return max(filtered) if filtered else None
 # ---------------------------
 # GenieACS API client
 # ---------------------------
@@ -336,8 +331,8 @@ async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts:
         return
 
     params = await client.get_device_parameters(device_id)
-    rx_val = extract_param_value(params, RX_PARAM_PATH) if RX_PARAM_PATH else None
-    tx_val = extract_param_value(params, TX_PARAM_PATH) if TX_PARAM_PATH else None
+    rx_val = find_param(params, CANDIDATE_RX_PATHS)
+    tx_val = find_param(params, CANDIDATE_TX_PATHS)
 
     # Update raw counters (set to 0 if missing)
     if rx_val is not None:
