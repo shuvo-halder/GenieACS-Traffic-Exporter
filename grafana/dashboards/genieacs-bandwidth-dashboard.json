@@ -1,0 +1,325 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "iteration": 162,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "genieacs_exporter_up",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "up",
+          "refId": "A"
+        }
+      ],
+      "title": "Exporter Health",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "none", "min": 0 },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "expr": "genieacs_polled_devices_total",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "polled_devices",
+          "refId": "A"
+        }
+      ],
+      "title": "Polled Devices (last cycle)",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "bps", "min": 0 },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "expr": "sum by(device_id) (genieacs_device_rx_rate_bps{device_id=~\"$device\"})",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "RX",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by(device_id) (genieacs_device_tx_rate_bps{device_id=~\"$device\"})",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "TX",
+          "refId": "B"
+        }
+      ],
+      "title": "Per-Device Real-time Bandwidth (bps)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "bps", "min": 0 },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 4 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "expr": "topk($top_n, sum by(device_id) (genieacs_device_rx_rate_bps))",
+          "format": "time_series",
+          "legendFormat": "RX {{device_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "topk($top_n, sum by(device_id) (genieacs_device_tx_rate_bps))",
+          "format": "time_series",
+          "legendFormat": "TX {{device_id}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Top $top_n Devices by Current Bandwidth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0 },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "id": 5,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "expr": "increase(genieacs_device_rx_bytes{device_id=~\"$device\"}[$__range])",
+          "format": "time_series",
+          "legendFormat": "RX increase",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(genieacs_device_tx_bytes{device_id=~\"$device\"}[$__range])",
+          "format": "time_series",
+          "legendFormat": "TX increase",
+          "refId": "B"
+        }
+      ],
+      "title": "Historical Usage (bytes transferred over selected range)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "bps", "min": 0 },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 12 },
+      "id": 6,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time(genieacs_device_rx_rate_bps{device_id=~\"$device\"}[$interval])",
+          "format": "time_series",
+          "legendFormat": "RX avg",
+          "refId": "A"
+        },
+        {
+          "expr": "avg_over_time(genieacs_device_tx_rate_bps{device_id=~\"$device\"}[$interval])",
+          "format": "time_series",
+          "legendFormat": "TX avg",
+          "refId": "B"
+        }
+      ],
+      "title": "Averaged Bandwidth (avg over $interval)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "none" },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+      "id": 7,
+      "options": {
+        "showHeader": true,
+        "transformations": []
+      },
+      "targets": [
+        {
+          "expr": "label_values(genieacs_device_rx_bytes, device_id)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Device Selector (for templating preview)",
+      "type": "table"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "none" },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
+      "id": 8,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "expr": "genieacs_device_rx_rate_bps{device_id=~\"$device\"}",
+          "format": "time_series",
+          "legendFormat": "RX rate",
+          "refId": "A"
+        },
+        {
+          "expr": "genieacs_device_tx_rate_bps{device_id=~\"$device\"}",
+          "format": "time_series",
+          "legendFormat": "TX rate",
+          "refId": "B"
+        },
+        {
+          "expr": "genieacs_device_rx_bytes{device_id=~\"$device\"}",
+          "format": "time_series",
+          "legendFormat": "RX bytes",
+          "refId": "C"
+        },
+        {
+          "expr": "genieacs_device_tx_bytes{device_id=~\"$device\"}",
+          "format": "time_series",
+          "legendFormat": "TX bytes",
+          "refId": "D"
+        }
+      ],
+      "title": "Device Details (raw metrics)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["genieacs", "bandwidth", "isp"],
+  "templating": {
+    "list": [
+      {
+        "current": { "text": "All", "value": "/.*/" },
+        "hide": 0,
+        "label": "Device",
+        "name": "device",
+        "options": [],
+        "query": "label_values(genieacs_device_rx_bytes, device_id)",
+        "refresh": 2,
+        "regex": "",
+        "type": "query",
+        "includeAll": true,
+        "multi": true,
+        "allValue": "/.*/",
+        "sort": 0,
+        "datasource": "Prometheus"
+      },
+      {
+        "current": { "text": "20", "value": "20" },
+        "hide": 0,
+        "label": "Top N",
+        "name": "top_n",
+        "options": [
+          { "text": "10", "value": "10" },
+          { "text": "20", "value": "20" },
+          { "text": "50", "value": "50" }
+        ],
+        "query": "20",
+        "refresh": 0,
+        "type": "custom",
+        "includeAll": false,
+        "multi": false,
+        "allValue": null,
+        "sort": 0
+      },
+      {
+        "current": { "text": "5m", "value": "5m" },
+        "hide": 0,
+        "label": "Avg Interval",
+        "name": "interval",
+        "options": [
+          { "text": "1m", "value": "1m" },
+          { "text": "5m", "value": "5m" },
+          { "text": "15m", "value": "15m" },
+          { "text": "1h", "value": "1h" }
+        ],
+        "query": "5m",
+        "refresh": 0,
+        "type": "custom",
+        "includeAll": false,
+        "multi": false,
+        "allValue": null,
+        "sort": 0
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "1h"],
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "7d", "30d"]
+  },
+  "timezone": "",
+  "title": "GenieACS Per-Device Bandwidth (Ready-to-Import)",
+  "uid": "genieacs-bandwidth-dashboard",
+  "version": 1
+}
