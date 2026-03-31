@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
 """
-Async Python exporter that polls GenieACS for device counters and exposes Prometheus metrics:
-- genieacs_device_rx_bytes{device_id}
-- genieacs_device_tx_bytes{device_id}
-- genieacs_device_rx_rate_bps{device_id}
-- genieacs_device_tx_rate_bps{device_id}
-
-Features:
-- Async fetching with aiohttp
-- Batching / pagination
-- Concurrency limit and backoff
-- Handles counter resets
-- Filters by ONLINE devices using lastInform
-- Optional Redis persistence for previous counters (recommended for restarts)
-- Dynamic parameter paths support via DEVICE_PARAM_PATHS env var
-- Graceful handling of missing parameters
-- Docker-friendly and configurable via env vars
+Async Python exporter that polls GenieACS for device counters and exposes Prometheus metrics.
+Updated:
+- Regex-based wildcard matching for parameter paths
+- Candidate path lookup (PPP, IP, WLAN)
+- Debug logging of parameter keys when matches are missing
+- Stable device_id selection for Redis keys
+- Proper query encoding for GenieACS list_devices
 """
 
 import os
@@ -26,33 +17,16 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 import aiohttp
 from aiohttp import ClientTimeout
-from prometheus_client import start_http_server, Gauge, REGISTRY
+from prometheus_client import start_http_server, Gauge
 import math
 import re
+from urllib.parse import quote_plus
 
-# Optional Redis for persistence across restarts
+# Optional Redis for persistence
 try:
     import aioredis
 except Exception:
     aioredis = None
-
-CANDIDATE_RX_PATHS = [
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesReceived",
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived",
-    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesReceived"
-]
-CANDIDATE_TX_PATHS = [
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesSent",
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent",
-    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesSent"
-]
-
-def find_param(params: Dict[str, Any], candidates: List[str]) -> Optional[int]:
-    for p in candidates:
-        v = extract_param_value(params, p)
-        if v is not None:
-            return v
-    return None
 
 # ---------------------------
 # Configuration via env vars
@@ -64,7 +38,6 @@ DEVICE_PARAM_PATHS = os.getenv(
     "DEVICE_PARAM_PATHS",
     "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived;InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent"
 )
-# Comma or semicolon separated list of parameter paths for RX and TX (first two are used by default)
 ONLINE_THRESHOLD_SECONDS = int(os.getenv("ONLINE_THRESHOLD_SECONDS", str(5 * 60)))  # lastInform within 5 minutes
 CONCURRENCY = int(os.getenv("CONCURRENCY", "200"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "200"))  # devices per page
@@ -76,12 +49,6 @@ CACHE_TTL = int(os.getenv("CACHE_TTL", str(60 * 60 * 24)))  # seconds for persis
 # Optional authentication for GenieACS API (Basic Auth)
 GENIEACS_API_USER = os.getenv("GENIEACS_API_USER", "")
 GENIEACS_API_PASS = os.getenv("GENIEACS_API_PASS", "")
-
-# Parameter mapping: allow dynamic vendor-specific paths
-# Provide as semicolon separated list: rx_path;tx_path
-param_paths = [p.strip() for p in DEVICE_PARAM_PATHS.replace(",", ";").split(";") if p.strip()]
-RX_PARAM_PATH = param_paths[0] if len(param_paths) >= 1 else ""
-TX_PARAM_PATH = param_paths[1] if len(param_paths) >= 2 else ""
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -197,16 +164,12 @@ def parse_last_inform(device: Dict[str, Any]) -> Optional[float]:
         if isinstance(last, (int, float)):
             return float(last)
         s = str(last)
-        # Try ISO format
         try:
-            # Python 3.11 has fromisoformat with Z handling; use fallback
             from datetime import datetime
-            # strip Z
             s2 = s.rstrip("Z")
             dt = datetime.fromisoformat(s2)
             return dt.timestamp()
         except Exception:
-            # try parse as float
             return float(s)
     except Exception:
         return None
@@ -217,25 +180,84 @@ def is_online(device: Dict[str, Any]) -> bool:
         return False
     return (time.time() - ts) <= ONLINE_THRESHOLD_SECONDS
 
+# ---------------------------
+# Parameter path handling
+# ---------------------------
+# Parse DEVICE_PARAM_PATHS env var into list (semicolon or comma separated)
+param_paths = [p.strip() for p in DEVICE_PARAM_PATHS.replace(",", ";").split(";") if p.strip()]
+
+# Build candidate lists: prefer explicit env-provided patterns first, then common PPP/IP/WLAN fallbacks
+CANDIDATE_RX_PATHS: List[str] = []
+CANDIDATE_TX_PATHS: List[str] = []
+
+# If env provided at least two entries, treat them as primary rx/tx pair(s)
+if len(param_paths) >= 2:
+    # If user provided multiple pairs, we will interleave them
+    # e.g., rx1;tx1;rx2;tx2;...
+    for i in range(0, len(param_paths), 2):
+        rx = param_paths[i]
+        tx = param_paths[i+1] if i+1 < len(param_paths) else None
+        if rx:
+            CANDIDATE_RX_PATHS.append(rx)
+        if tx:
+            CANDIDATE_TX_PATHS.append(tx)
+
+# Append robust defaults (PPP first, then IP, then WLAN totals)
+defaults_rx = [
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesReceived",
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived",
+    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesReceived"
+]
+defaults_tx = [
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesSent",
+    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent",
+    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesSent"
+]
+
+# Ensure defaults are present after any env-provided patterns
+for p in defaults_rx:
+    if p not in CANDIDATE_RX_PATHS:
+        CANDIDATE_RX_PATHS.append(p)
+for p in defaults_tx:
+    if p not in CANDIDATE_TX_PATHS:
+        CANDIDATE_TX_PATHS.append(p)
+
+logger.debug("Candidate RX paths: %s", CANDIDATE_RX_PATHS)
+logger.debug("Candidate TX paths: %s", CANDIDATE_TX_PATHS)
+
 def pattern_to_regex(pattern: str) -> re.Pattern:
-    # Convert wildcard '*' to '.*' and escape other chars
+    """
+    Convert a dot-separated pattern with '*' wildcards into a regex.
+    '*' -> '.*' so it can match variable-length segments (e.g., Stats.1).
+    Escape other characters safely.
+    """
     esc = re.escape(pattern)
     esc = esc.replace(r"\*", ".*")
-    # match full key
+    # anchor full match
     return re.compile(r"^" + esc + r"$")
 
 def extract_param_value(params: Dict[str, Any], path_pattern: str) -> Optional[int]:
+    """
+    Regex-based matching: treat '*' as multi-segment wildcard.
+    Fallback to suffix match if no regex matches found.
+    """
     if not params or not path_pattern:
         return None
-    regex = pattern_to_regex(path_pattern)
+    try:
+        regex = pattern_to_regex(path_pattern)
+    except Exception:
+        return None
     candidates = []
     for key, val in params.items():
-        if regex.match(key):
-            if isinstance(val, dict) and "value" in val:
-                candidates.append(safe_int(val["value"]))
-            else:
-                candidates.append(safe_int(val))
-    # fallback: suffix match (existing behavior)
+        try:
+            if regex.match(key):
+                if isinstance(val, dict) and "value" in val:
+                    candidates.append(safe_int(val["value"]))
+                else:
+                    candidates.append(safe_int(val))
+        except Exception:
+            continue
+    # fallback: suffix match (useful when pattern ends with concrete suffix)
     if not candidates:
         suffix_parts = []
         for seg in reversed(path_pattern.split(".")):
@@ -252,6 +274,14 @@ def extract_param_value(params: Dict[str, Any], path_pattern: str) -> Optional[i
                         candidates.append(safe_int(val))
     filtered = [c for c in candidates if c is not None]
     return max(filtered) if filtered else None
+
+def find_param(params: Dict[str, Any], candidates: List[str]) -> Optional[int]:
+    for p in candidates:
+        v = extract_param_value(params, p)
+        if v is not None:
+            return v
+    return None
+
 # ---------------------------
 # GenieACS API client
 # ---------------------------
@@ -267,14 +297,13 @@ class GenieACSClient:
         """
         Returns (devices, has_more)
         Uses GenieACS /devices endpoint with pagination parameters.
-        The exact API shape may vary by GenieACS version; this function uses a generic approach:
         GET /devices?query=<json>&limit=<limit>&skip=<skip>
         """
         skip = page * limit
+        # Properly encode query JSON
         url = f"{self.base_url}/devices?limit={limit}&skip={skip}"
-        # attach query filter if provided
         if query_filter and query_filter != "{}":
-            url += f"&query={aiohttp.helpers.quote(query_filter)}"
+            url += f"&query={quote_plus(query_filter)}"
         try:
             async with self.session.get(url, auth=self.auth, timeout=ClientTimeout(total=GENIEACS_TIMEOUT)) as resp:
                 if resp.status != 200:
@@ -282,9 +311,7 @@ class GenieACSClient:
                     logger.warning("list_devices: non-200 %s: %s", resp.status, text[:200])
                     return [], False
                 data = await resp.json()
-                # GenieACS returns list and total? We'll assume list
                 devices = data if isinstance(data, list) else data.get("data", data.get("devices", []))
-                # Determine has_more by length
                 has_more = len(devices) == limit
                 return devices, has_more
         except Exception as e:
@@ -302,7 +329,6 @@ class GenieACSClient:
                     logger.debug("get_device_parameters %s returned %s", device_id, resp.status)
                     return {}
                 data = await resp.json()
-                # GenieACS returns dict of parameter objects
                 return data if isinstance(data, dict) else {}
         except Exception as e:
             logger.debug("get_device_parameters error for %s: %s", device_id, e)
@@ -312,6 +338,7 @@ class GenieACSClient:
 # Polling and metric update
 # ---------------------------
 async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts: float):
+    # Prefer stable internal id for persistence
     device_id = device.get("_id") or device.get("id") or device.get("deviceId") or device.get("serialNumber") or device.get("name")
     serial = device.get("serialNumber") or device.get("serial") or ""
     ip = device.get("ip") or device.get("wan_ip") or ""
@@ -331,6 +358,18 @@ async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts:
         return
 
     params = await client.get_device_parameters(device_id)
+
+    # Debug: show sample parameter keys when missing expected values
+    if not params:
+        logger.debug("No parameters returned for device %s", device_id)
+    else:
+        # Only log sample keys when we don't find expected keys
+        rx_try = find_param(params, CANDIDATE_RX_PATHS)
+        tx_try = find_param(params, CANDIDATE_TX_PATHS)
+        if rx_try is None or tx_try is None:
+            logger.debug("Device %s parameter keys (sample %d): %s", device_id, len(params), list(params.keys())[:80])
+
+    # Use candidate lists to find values
     rx_val = find_param(params, CANDIDATE_RX_PATHS)
     tx_val = find_param(params, CANDIDATE_TX_PATHS)
 
@@ -338,7 +377,6 @@ async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts:
     if rx_val is not None:
         g_rx_bytes.labels(device_id=device_id, serial=serial, ip=ip).set(rx_val)
     else:
-        # missing parameter: set nothing but log at debug
         logger.debug("Missing RX param for device %s", device_id)
 
     if tx_val is not None:
@@ -355,14 +393,12 @@ async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts:
     # If no previous sample, store current and skip rate until next poll
     if prev_ts is None:
         await state_store.set(device_id, {"ts": now_ts, "rx": rx_val, "tx": tx_val})
-        # set rates to 0 for initial sample
         g_rx_rate.labels(device_id=device_id, serial=serial, ip=ip).set(0.0)
         g_tx_rate.labels(device_id=device_id, serial=serial, ip=ip).set(0.0)
         return
 
     elapsed = now_ts - prev_ts if prev_ts else None
     if not elapsed or elapsed <= 0:
-        # avoid division by zero
         return
 
     # RX rate
@@ -370,11 +406,9 @@ async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts:
     if rx_val is not None and prev_rx is not None:
         delta = rx_val - prev_rx
         if delta < 0:
-            # counter reset or rollover; assume 32/64-bit counter unknown: treat delta as rx_val (best-effort)
+            # counter reset or rollover; best-effort assume new value
             delta = rx_val
-        # bytes/sec -> bits/sec
         rx_rate_bps = (delta / elapsed) * 8.0
-        # sanitize NaN/inf
         if not math.isfinite(rx_rate_bps) or rx_rate_bps < 0:
             rx_rate_bps = 0.0
     else:
@@ -401,7 +435,6 @@ async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts:
 async def poll_loop():
     timeout = ClientTimeout(total=GENIEACS_TIMEOUT)
     connector = aiohttp.TCPConnector(limit=CONCURRENCY, force_close=False)
-    auth = None
     headers = {"Accept": "application/json"}
     async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
         client = GenieACSClient(GENIEACS_API_URL, session)
@@ -412,8 +445,6 @@ async def poll_loop():
             polled = 0
             try:
                 page = 0
-                tasks = []
-                sem = asyncio.Semaphore(CONCURRENCY)
                 devices_this_cycle = []
 
                 # Pagination loop
@@ -431,6 +462,8 @@ async def poll_loop():
                 now_ts = time.time()
 
                 # Process devices in parallel with concurrency control
+                sem = asyncio.Semaphore(CONCURRENCY)
+
                 async def sem_task(dev):
                     async with sem:
                         await process_device(client, dev, now_ts)
