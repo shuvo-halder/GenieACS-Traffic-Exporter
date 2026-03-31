@@ -25,61 +25,32 @@ cd genieacs-traffic-exporter
 You can build the image locally. No build‑time environment variables are required for normal operation; configuration is provided at runtime via environment variables.
 
 ```bash
-docker build -t genieacs-exporter:latest .
+docker compose build --no-cache genieacs-exporter
 ```
 
 If you want to bake defaults into the image (not recommended for secrets), you can use `--build-arg` and modify the `Dockerfile` to accept build args. The recommended approach is runtime env vars (below).
 
 #### 3. Run the exporter container (recommended)
-**Important:** set `GENIEACS_API_URL` to the **base** GenieACS API URL **without** `/devices`.  
+**Important:** set `GENIEACS_API_URL` to the **docker-compose.yml** GenieACS API URL **without** `/devices`.  
 Example: `http://10.13.14.18:7557`
 
 ```bash
-docker run -d \
-  --name genieacs-exporter \
-  -p 9410:9410 \
-  -e GENIEACS_API_URL=http://10.13.14.18:7557 \
-  -e POLL_INTERVAL=15 \
-  -e DEVICE_QUERY_FILTER='{}' \
-  -e DEVICE_PARAM_PATHS='InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived;InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent' \
-  -e ONLINE_THRESHOLD_SECONDS=300 \
-  -e CONCURRENCY=200 \
-  -e BATCH_SIZE=200 \
-  -e EXPORTER_PORT=9410 \
-  genieacs-exporter:latest
+docker compose up -d
 ```
 
+#### View container logs
+```bash
+docker compose logs -f genieacs-exporter
+```
+#### Rebuild after code changes (optional)
+```bash
+docker compose up -d --build
+```
 **If port 9410 is already used on the host**, remap host port:
 ```bash
 docker run -d --name genieacs-exporter -p 9510:9410 -e GENIEACS_API_URL=http://10.13.14.18:7557 genieacs-exporter:latest
 ```
 Then Prometheus should scrape `localhost:9510`.
-
----
-
-### Environment variables and how to modify them
-
-Configure the exporter at runtime using environment variables. Common variables:
-
-- **GENIEACS_API_URL** — base URL for GenieACS API (required). *Do not include `/devices`.*  
-  Example: `http://10.13.14.18:7557`
-- **POLL_INTERVAL** — seconds between polls (default `15`)
-- **DEVICE_QUERY_FILTER** — JSON query string for device listing (default `{}`)
-- **DEVICE_PARAM_PATHS** — semicolon separated `rx_path;tx_path` (supports `*` wildcards)
-- **ONLINE_THRESHOLD_SECONDS** — seconds since `lastInform` to consider device online (default `300`)
-- **CONCURRENCY** — max concurrent HTTP requests (default `200`)
-- **BATCH_SIZE** — devices per page (default `200`)
-- **GENIEACS_API_USER / GENIEACS_API_PASS** — optional basic auth
-- **REDIS_URL** — optional Redis for state persistence (e.g., `redis://redis:6379/0`)
-- **EXPORTER_PORT** — container port for metrics (default `9410`)
-- **LOG_LEVEL** — `INFO` / `DEBUG` etc.
-
-**How to set them**
-- `docker run -e VAR=value` (examples above)
-- `docker-compose.yml` `environment:` block or `.env` file
-- Kubernetes `env:` in Pod spec or use Secrets for credentials
-
----
 
 ### Prometheus integration
 
