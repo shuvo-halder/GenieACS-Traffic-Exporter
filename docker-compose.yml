@@ -1,6 +1,11 @@
-version: "3.8"
-
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: genieacs-exporter-redis
+    restart: unless-stopped
+    networks:
+      - monitoring
+
   genieacs-exporter:
     build: .
     image: genieacs-exporter:latest
@@ -9,8 +14,7 @@ services:
     ports:
       - "9410:9410"
     environment:
-      # Set these in .env or override here
-      GENIEACS_API_URL: "${GENIEACS_API_URL:-http://genieacs_url:7557}"
+      GENIEACS_API_URL: "${GENIEACS_API_URL:-http://genieacs:7557}"
       POLL_INTERVAL: "${POLL_INTERVAL:-15}"
       DEVICE_QUERY_FILTER: "${DEVICE_QUERY_FILTER:-{}}"
       DEVICE_PARAM_PATHS: >
@@ -18,21 +22,31 @@ services:
         InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesSent;
         InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived;
         InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent
-
       ONLINE_THRESHOLD_SECONDS: "${ONLINE_THRESHOLD_SECONDS:-300}"
       CONCURRENCY: "${CONCURRENCY:-200}"
       BATCH_SIZE: "${BATCH_SIZE:-200}"
       EXPORTER_PORT: "${EXPORTER_PORT:-9410}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      # Optional Redis persistence
-      # REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+    depends_on:
+      - redis
     networks:
       - monitoring
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import sys,urllib.request as u; u.urlopen('http://127.0.0.1:9410/metrics').read(); print('ok')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:9410/metrics').read()\""]
       interval: 30s
       timeout: 10s
       retries: 3
+#    deploy:
+#      resources:
+#        limits:
+#          cpus: '20'
+#          memory: 4096M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 networks:
   monitoring:
