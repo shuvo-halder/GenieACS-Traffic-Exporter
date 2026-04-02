@@ -325,14 +325,14 @@ func computeRate(prev uint64, curr uint64, dt float64) float64 {
         delta := curr - prev
         return float64(delta*8) / dt
     }
-    // wrap handling
+    // wrap handling: compute (max - prev) + curr + 1 safely
     const max32 = uint64(math.MaxUint32)
     const max64 = uint64(math.MaxUint64)
     var delta uint64
     if prev <= max32 && curr <= max32 {
-        delta = curr + (max32 + 1) - prev
+        delta = (max32 - prev) + curr + 1
     } else {
-        delta = curr + (max64 + 1) - prev
+        delta = (max64 - prev) + curr + 1
     }
     return float64(delta*8) / dt
 }
