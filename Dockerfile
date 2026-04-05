@@ -12,7 +12,7 @@ COPY exporter.py /app/exporter.py
 COPY requirements.txt /app/requirements.txt
 
 # Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev python3-aiohttp \
     && pip install --no-cache-dir -r /app/requirements.txt \
     && apt-get remove -y gcc libpq-dev \
     && apt-get autoremove -y \

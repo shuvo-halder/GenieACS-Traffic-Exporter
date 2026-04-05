@@ -1,499 +1,428 @@
-#!/usr/bin/env python3
-"""
-Async Python exporter that polls GenieACS for device counters and exposes Prometheus metrics.
-Updated:
-- Regex-based wildcard matching for parameter paths
-- Candidate path lookup (PPP, IP, WLAN)
-- Debug logging of parameter keys when matches are missing
-- Stable device_id selection for Redis keys
-- Proper query encoding for GenieACS list_devices
-"""
-
-import os
+# exp.py
 import asyncio
-import time
-import json
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, Optional, Tuple, List
+
 import aiohttp
-from aiohttp import ClientTimeout
-from prometheus_client import start_http_server, Gauge
-import math
-import re
-from urllib.parse import quote_plus
+from dateutil import parser as dateparser
+from fastapi import FastAPI, Response
+from prometheus_client import CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST, Gauge, Histogram
+from prometheus_client.core import GaugeMetricFamily, REGISTRY
 
-# Optional Redis for persistence
-try:
-    import aioredis
-except Exception:
-    aioredis = None
+# -----------------------
+# Configuration via env
+# -----------------------
+GENIEACS_URL = os.getenv("GENIEACS_URL", "http://genieacs:7557/devices")
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
+ACTIVE_WINDOW_SECONDS = int(os.getenv("ACTIVE_WINDOW_SECONDS", str(5 * 60)))  # default 5 minutes
+KEEP_LAST_KNOWN_SECONDS = int(os.getenv("KEEP_LAST_KNOWN_SECONDS", str(60 * 60)))  # keep last-known values for 1 hour
+HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "10"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+RETRY_BACKOFF_BASE = float(os.getenv("RETRY_BACKOFF_BASE", "0.5"))
+CONCURRENCY_LIMIT = int(os.getenv("CONCURRENCY_LIMIT", "50"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+PAGE_LIMIT = int(os.getenv("PAGE_LIMIT", "1000"))  # for pagination if needed
 
-# ---------------------------
-# Configuration via env vars
-# ---------------------------
-GENIEACS_API_URL = os.getenv("GENIEACS_API_URL", "http://genieacs:7557")
-POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "15"))  # seconds
-DEVICE_QUERY_FILTER = os.getenv("DEVICE_QUERY_FILTER", "{}")  # JSON filter for GenieACS devices endpoint
-DEVICE_PARAM_PATHS = os.getenv(
-    "DEVICE_PARAM_PATHS",
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived;InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent"
-)
-ONLINE_THRESHOLD_SECONDS = int(os.getenv("ONLINE_THRESHOLD_SECONDS", str(5 * 60)))  # lastInform within 5 minutes
-CONCURRENCY = int(os.getenv("CONCURRENCY", "200"))
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "200"))  # devices per page
-GENIEACS_TIMEOUT = int(os.getenv("GENIEACS_TIMEOUT", "20"))
-EXPORTER_PORT = int(os.getenv("EXPORTER_PORT", "9410"))
-REDIS_URL = os.getenv("REDIS_URL", "")  # optional, e.g., redis://redis:6379/0
-CACHE_TTL = int(os.getenv("CACHE_TTL", str(60 * 60 * 24)))  # seconds for persisted state
-
-# Optional authentication for GenieACS API (Basic Auth)
-GENIEACS_API_USER = os.getenv("GENIEACS_API_USER", "")
-GENIEACS_API_PASS = os.getenv("GENIEACS_API_PASS", "")
-
+# -----------------------
 # Logging
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("genieacs_exporter")
+# -----------------------
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s:%(name)s: %(message)s")
+logger = logging.getLogger("exp")
 
-# ---------------------------
-# Prometheus metrics
-# ---------------------------
-g_rx_bytes = Gauge(
-    "genieacs_device_rx_bytes",
-    "Total bytes received (counter) reported by device",
-    ["device_id", "serial", "ip"]
-)
-g_tx_bytes = Gauge(
-    "genieacs_device_tx_bytes",
-    "Total bytes sent (counter) reported by device",
-    ["device_id", "serial", "ip"]
-)
-g_rx_rate = Gauge(
-    "genieacs_device_rx_rate_bps",
-    "Inbound bandwidth rate in bits per second",
-    ["device_id", "serial", "ip"]
-)
-g_tx_rate = Gauge(
-    "genieacs_device_tx_rate_bps",
-    "Outbound bandwidth rate in bits per second",
-    ["device_id", "serial", "ip"]
-)
-g_up = Gauge("genieacs_exporter_up", "Exporter health (1 = running)", [])
-g_polled_devices = Gauge("genieacs_polled_devices_total", "Number of devices polled in last cycle", [])
+# -----------------------
+# In-memory store
+# -----------------------
+# device_metrics: device_id -> {
+#   "bytes_received": int,
+#   "bytes_sent": int,
+#   "last_inform": iso,
+#   "found_keys": [...],
+#   "last_seen": iso,
+#   "active": bool
+# }
+device_metrics: Dict[str, Dict[str, Any]] = {}
+device_metrics_lock = asyncio.Lock()
 
-# ---------------------------
-# State management
-# ---------------------------
-class StateStore:
-    """
-    Simple pluggable state store. Uses Redis if REDIS_URL provided and aioredis installed,
-    otherwise falls back to in-memory dict (non-persistent).
-    Stores previous counters and timestamps for rate calculation.
-    """
+# -----------------------
+# Internal Prometheus registry for exporter metrics
+# -----------------------
+PROM_REG = CollectorRegistry()
+poll_success = Gauge("genieacs_poll_success", "Last poll success (1=success,0=failure)", registry=PROM_REG)
+poll_duration = Histogram("genieacs_poll_duration_seconds", "Duration of last poll", registry=PROM_REG)
+active_devices_g = Gauge("genieacs_active_devices", "Number of active devices in memory", registry=PROM_REG)
 
-    def __init__(self):
-        self._mem: Dict[str, Dict[str, Any]] = {}
-        self._redis = None
-        self._use_redis = False
+# -----------------------
+# Custom collector for device metrics
+# -----------------------
+class GenieACSCollector:
+    def collect(self):
+        g_recv = GaugeMetricFamily(
+            "genieacs_device_bytes_received",
+            "Latest BytesReceived from GenieACS per device",
+            labels=["device_id"],
+        )
+        g_sent = GaugeMetricFamily(
+            "genieacs_device_bytes_sent",
+            "Latest BytesSent from GenieACS per device",
+            labels=["device_id"],
+        )
+        g_active = GaugeMetricFamily(
+            "genieacs_device_active",
+            "Device active flag from GenieACS per device (1=active,0=inactive)",
+            labels=["device_id"],
+        )
+        g_last_seen = GaugeMetricFamily(
+            "genieacs_device_last_seen_seconds",
+            "Last seen time as unix epoch seconds per device",
+            labels=["device_id"],
+        )
 
-    async def init(self):
-        if REDIS_URL and aioredis:
+        # snapshot copy (atomic enough because poller replaces dict under lock)
+        snapshot = dict(device_metrics)
+        for device_id, vals in snapshot.items():
             try:
-                self._redis = await aioredis.from_url(REDIS_URL)
-                self._use_redis = True
-                logger.info("Using Redis state store at %s", REDIS_URL)
-            except Exception as e:
-                logger.warning("Failed to connect to Redis (%s). Falling back to in-memory store. Error: %s", REDIS_URL, e)
-                self._use_redis = False
-        else:
-            if REDIS_URL and not aioredis:
-                logger.warning("REDIS_URL provided but aioredis not installed. Falling back to in-memory store.")
-            self._use_redis = False
+                br = vals.get("bytes_received", 0) or 0
+                bs = vals.get("bytes_sent", 0) or 0
+                active = 1 if vals.get("active") else 0
+                last_seen_iso = vals.get("last_seen") or vals.get("last_inform")
+                last_seen_ts = None
+                if last_seen_iso:
+                    dt = parse_last_inform(last_seen_iso)
+                    if dt:
+                        last_seen_ts = dt.timestamp()
 
-    async def get(self, device_id: str) -> Optional[Dict[str, Any]]:
-        if self._use_redis:
-            try:
-                raw = await self._redis.get(f"genieacs_state:{device_id}")
-                if raw:
-                    return json.loads(raw)
-                return None
-            except Exception as e:
-                logger.debug("Redis get error: %s", e)
-                return None
-        else:
-            return self._mem.get(device_id)
+                g_recv.add_metric([device_id], float(br))
+                g_sent.add_metric([device_id], float(bs))
+                g_active.add_metric([device_id], float(active))
+                if last_seen_ts is not None:
+                    g_last_seen.add_metric([device_id], float(last_seen_ts))
+            except Exception:
+                logger.exception("Error adding metric for device %s", device_id)
 
-    async def set(self, device_id: str, value: Dict[str, Any]):
-        if self._use_redis:
-            try:
-                await self._redis.set(f"genieacs_state:{device_id}", json.dumps(value), ex=CACHE_TTL)
-            except Exception as e:
-                logger.debug("Redis set error: %s", e)
-        else:
-            self._mem[device_id] = value
+        yield g_recv
+        yield g_sent
+        yield g_active
+        yield g_last_seen
 
-    async def close(self):
-        if self._redis:
-            await self._redis.close()
+# Register collector after class definition
+REGISTRY.register(GenieACSCollector())
 
-state_store = StateStore()
-
-# ---------------------------
-# Helper functions
-# ---------------------------
-def safe_int(v) -> Optional[int]:
+# -----------------------
+# Helpers: parsing and safe conversion
+# -----------------------
+def parse_last_inform(ts: Optional[str]) -> Optional[datetime]:
+    if not ts:
+        return None
     try:
+        dt = dateparser.parse(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        logger.debug("Failed to parse _lastInform: %s", ts)
+        return None
+
+def unwrap_value(v):
+    """
+    GenieACS often stores values as:
+      { "_value": 123 } or { "value": 123 } or plain scalar
+    """
+    if isinstance(v, dict):
+        if "_value" in v:
+            return v["_value"]
+        if "value" in v:
+            return v["value"]
+    return v
+
+def safe_int(val) -> Optional[int]:
+    if val is None:
+        return None
+    try:
+        if isinstance(val, str):
+            val = val.strip().replace(",", "")
+        return int(val)
+    except Exception:
+        try:
+            return int(float(val))
+        except Exception:
+            return None
+
+def find_bytes_in_tree(obj: Any) -> Tuple[Optional[int], Optional[int], List[str]]:
+    br = None
+    bs = None
+    found_keys: List[str] = []
+
+    def norm_key(k: str) -> str:
+        return k.lower().replace(" ", "")
+
+    def extract_int_from_val(v) -> Optional[int]:
+        v = unwrap_value(v)
         if v is None:
             return None
         if isinstance(v, (int, float)):
-            return int(v)
-        return int(str(v))
-    except Exception:
+            try:
+                return int(v)
+            except Exception:
+                return None
+        if isinstance(v, str):
+            s = v.strip().replace(",", "")
+            import re
+            m = re.search(r"(-?\d+(\.\d+)?)", s)
+            if m:
+                try:
+                    return int(float(m.group(1)))
+                except Exception:
+                    return None
         return None
 
-def parse_last_inform(device: Dict[str, Any]) -> Optional[float]:
-    """
-    GenieACS device object typically has lastInform as ISO timestamp string or epoch.
-    We'll try to parse common formats. If missing, return None.
-    """
-    last = device.get("lastInform") or device.get("last_inform") or device.get("lastInformTime")
-    if not last:
-        return None
-    # If it's numeric epoch
-    try:
-        if isinstance(last, (int, float)):
-            return float(last)
-        s = str(last)
-        try:
-            from datetime import datetime
-            s2 = s.rstrip("Z")
-            dt = datetime.fromisoformat(s2)
-            return dt.timestamp()
-        except Exception:
-            return float(s)
-    except Exception:
-        return None
-
-def is_online(device: Dict[str, Any]) -> bool:
-    ts = parse_last_inform(device)
-    if ts is None:
+    def key_matches(k: str, want: str) -> bool:
+        lk = norm_key(k)
+        # match bytes/octet and common recv/sent tokens
+        if "bytes" in lk or "octet" in lk:
+            if want == "recv":
+                return any(x in lk for x in ("recv", "received", "down", "rx", "in", "download", "total"))
+            else:
+                return any(x in lk for x in ("sent", "tx", "up", "upload", "total"))
+        # fallback matches
+        if want == "recv" and any(x in lk for x in ("received", "rx", "down")):
+            return True
+        if want == "sent" and any(x in lk for x in ("sent", "tx", "up")):
+            return True
         return False
-    return (time.time() - ts) <= ONLINE_THRESHOLD_SECONDS
 
-# ---------------------------
-# Parameter path handling
-# ---------------------------
-# Parse DEVICE_PARAM_PATHS env var into list (semicolon or comma separated)
-param_paths = [p.strip() for p in DEVICE_PARAM_PATHS.replace(",", ";").split(";") if p.strip()]
+    def dfs(node: Any, path: str = ""):
+        nonlocal br, bs
+        if isinstance(node, dict):
+            for k, v in node.items():
+                full_key = f"{path}.{k}" if path else k
+                try:
+                    if isinstance(k, str):
+                        if key_matches(k, "recv"):
+                            ival = extract_int_from_val(v)
+                            if ival is not None:
+                                br = ival
+                                found_keys.append(full_key)
+                        if key_matches(k, "sent"):
+                            ival = extract_int_from_val(v)
+                            if ival is not None:
+                                bs = ival
+                                found_keys.append(full_key)
+                except Exception:
+                    logger.debug("Error checking key %s", full_key, exc_info=True)
+                if isinstance(v, dict):
+                    dfs(v, full_key)
+                elif isinstance(v, list):
+                    for idx, item in enumerate(v):
+                        dfs(item, f"{full_key}[{idx}]")
+        elif isinstance(node, list):
+            for idx, item in enumerate(node):
+                dfs(item, f"{path}[{idx}]")
 
-# Build candidate lists: prefer explicit env-provided patterns first, then common PPP/IP/WLAN fallbacks
-CANDIDATE_RX_PATHS: List[str] = []
-CANDIDATE_TX_PATHS: List[str] = []
+    dfs(obj)
+    return br, bs, found_keys
 
-# If env provided at least two entries, treat them as primary rx/tx pair(s)
-if len(param_paths) >= 2:
-    # If user provided multiple pairs, we will interleave them
-    # e.g., rx1;tx1;rx2;tx2;...
-    for i in range(0, len(param_paths), 2):
-        rx = param_paths[i]
-        tx = param_paths[i+1] if i+1 < len(param_paths) else None
-        if rx:
-            CANDIDATE_RX_PATHS.append(rx)
-        if tx:
-            CANDIDATE_TX_PATHS.append(tx)
-
-# Append robust defaults (PPP first, then IP, then WLAN totals)
-defaults_rx = [
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesReceived",
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesReceived",
-    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesReceived"
-]
-defaults_tx = [
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Stats.*.EthernetBytesSent",
-    "InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANIPConnection.*.Stats.BytesSent",
-    "InternetGatewayDevice.LANDevice.*.WLANConfiguration.*.TotalBytesSent"
-]
-
-# Ensure defaults are present after any env-provided patterns
-for p in defaults_rx:
-    if p not in CANDIDATE_RX_PATHS:
-        CANDIDATE_RX_PATHS.append(p)
-for p in defaults_tx:
-    if p not in CANDIDATE_TX_PATHS:
-        CANDIDATE_TX_PATHS.append(p)
-
-logger.debug("Candidate RX paths: %s", CANDIDATE_RX_PATHS)
-logger.debug("Candidate TX paths: %s", CANDIDATE_TX_PATHS)
-
-def pattern_to_regex(pattern: str) -> re.Pattern:
-    """
-    Convert a dot-separated pattern with '*' wildcards into a regex.
-    '*' -> '.*' so it can match variable-length segments (e.g., Stats.1).
-    Escape other characters safely.
-    """
-    esc = re.escape(pattern)
-    esc = esc.replace(r"\*", ".*")
-    # anchor full match
-    return re.compile(r"^" + esc + r"$")
-
-def extract_param_value(params: Dict[str, Any], path_pattern: str) -> Optional[int]:
-    """
-    Regex-based matching: treat '*' as multi-segment wildcard.
-    Fallback to suffix match if no regex matches found.
-    """
-    if not params or not path_pattern:
-        return None
-    try:
-        regex = pattern_to_regex(path_pattern)
-    except Exception:
-        return None
-    candidates = []
-    for key, val in params.items():
+# -----------------------
+# HTTP fetch with retries and optional pagination
+# -----------------------
+async def fetch_with_retries(session: aiohttp.ClientSession, url: str, params=None) -> Optional[Any]:
+    backoff = RETRY_BACKOFF_BASE
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            if regex.match(key):
-                if isinstance(val, dict) and "value" in val:
-                    candidates.append(safe_int(val["value"]))
+            timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+            async with session.get(url, params=params, timeout=timeout) as resp:
+                text = await resp.text()
+                if resp.status == 200:
+                    try:
+                        return await resp.json()
+                    except Exception:
+                        logger.warning("JSON parse error from %s; returning raw text for inspection", url)
+                        return {"__raw_text": text}
                 else:
-                    candidates.append(safe_int(val))
-        except Exception:
-            continue
-    # fallback: suffix match (useful when pattern ends with concrete suffix)
-    if not candidates:
-        suffix_parts = []
-        for seg in reversed(path_pattern.split(".")):
-            if seg == "*":
-                break
-            suffix_parts.insert(0, seg)
-        if suffix_parts:
-            suffix = ".".join(suffix_parts)
-            for key, val in params.items():
-                if key.endswith(suffix):
-                    if isinstance(val, dict) and "value" in val:
-                        candidates.append(safe_int(val["value"]))
-                    else:
-                        candidates.append(safe_int(val))
-    filtered = [c for c in candidates if c is not None]
-    return max(filtered) if filtered else None
-
-def find_param(params: Dict[str, Any], candidates: List[str]) -> Optional[int]:
-    for p in candidates:
-        v = extract_param_value(params, p)
-        if v is not None:
-            return v
+                    logger.warning("Non-200 from %s: %s body: %.300s", url, resp.status, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Error fetching %s (attempt %d/%d): %s", url, attempt, MAX_RETRIES, e)
+        await asyncio.sleep(backoff)
+        backoff *= 2
+    logger.error("Failed to fetch %s after %d attempts", url, MAX_RETRIES)
     return None
 
-# ---------------------------
-# GenieACS API client
-# ---------------------------
-class GenieACSClient:
-    def __init__(self, base_url: str, session: aiohttp.ClientSession):
-        self.base_url = base_url.rstrip("/")
-        self.session = session
-        self.auth = None
-        if GENIEACS_API_USER:
-            self.auth = aiohttp.BasicAuth(GENIEACS_API_USER, GENIEACS_API_PASS)
+async def fetch_all_devices(session: aiohttp.ClientSession) -> Optional[list]:
+    """
+    Fetch devices. If GenieACS returns paginated 'items', iterate pages using skip/limit.
+    If single list returned, return it directly.
+    """
+    data = await fetch_with_retries(session, GENIEACS_URL)
+    if data is None:
+        return None
 
-    async def list_devices(self, page: int = 0, limit: int = 200, query_filter: str = "{}") -> Tuple[List[Dict[str, Any]], bool]:
-        """
-        Returns (devices, has_more)
-        Uses GenieACS /devices endpoint with pagination parameters.
-        GET /devices?query=<json>&limit=<limit>&skip=<skip>
-        """
-        skip = page * limit
-        # Properly encode query JSON
-        url = f"{self.base_url}/devices?limit={limit}&skip={skip}"
-        if query_filter and query_filter != "{}":
-            url += f"&query={quote_plus(query_filter)}"
-        try:
-            async with self.session.get(url, auth=self.auth, timeout=ClientTimeout(total=GENIEACS_TIMEOUT)) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.warning("list_devices: non-200 %s: %s", resp.status, text[:200])
-                    return [], False
-                data = await resp.json()
-                devices = data if isinstance(data, list) else data.get("data", data.get("devices", []))
-                has_more = len(devices) == limit
-                return devices, has_more
-        except Exception as e:
-            logger.exception("Error listing devices: %s", e)
-            return [], False
+    # If raw text returned
+    if isinstance(data, dict) and "__raw_text" in data:
+        logger.error("GenieACS returned non-JSON payload; inspect raw text")
+        logger.debug(data["__raw_text"][:2000])
+        return None
 
-    async def get_device_parameters(self, device_id: str) -> Dict[str, Any]:
-        """
-        GET /devices/{id}/parameters
-        """
-        url = f"{self.base_url}/devices/{device_id}/parameters"
-        try:
-            async with self.session.get(url, auth=self.auth, timeout=ClientTimeout(total=GENIEACS_TIMEOUT)) as resp:
-                if resp.status != 200:
-                    logger.debug("get_device_parameters %s returned %s", device_id, resp.status)
-                    return {}
-                data = await resp.json()
-                return data if isinstance(data, dict) else {}
-        except Exception as e:
-            logger.debug("get_device_parameters error for %s: %s", device_id, e)
-            return {}
+    # If API returns {"items": [...], "total": N}
+    if isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
+        items = data["items"]
+        # try pagination if total > len(items)
+        total = data.get("total")
+        if total and total > len(items):
+            # fetch remaining pages
+            skip = len(items)
+            while skip < total:
+                params = {"limit": PAGE_LIMIT, "skip": skip}
+                page = await fetch_with_retries(session, GENIEACS_URL, params=params)
+                if page is None:
+                    break
+                if isinstance(page, dict) and "items" in page and isinstance(page["items"], list):
+                    items.extend(page["items"])
+                    skip += len(page["items"])
+                else:
+                    break
+        return items
 
-# ---------------------------
-# Polling and metric update
-# ---------------------------
-async def process_device(client: GenieACSClient, device: Dict[str, Any], now_ts: float):
-    # Prefer stable internal id for persistence
-    device_id = device.get("_id") or device.get("id") or device.get("deviceId") or device.get("serialNumber") or device.get("name")
-    serial = device.get("serialNumber") or device.get("serial") or ""
-    ip = device.get("ip") or device.get("wan_ip") or ""
-    if not device_id:
-        logger.debug("Skipping device with no id: %s", device)
-        return
+    # If API returns a list
+    if isinstance(data, list):
+        return data
 
-    if not is_online(device):
-        # Clear metrics for offline devices to avoid stale graphs
-        try:
-            g_rx_bytes.remove(device_id, serial, ip)
-            g_tx_bytes.remove(device_id, serial, ip)
-            g_rx_rate.remove(device_id, serial, ip)
-            g_tx_rate.remove(device_id, serial, ip)
-        except KeyError:
-            pass
-        return
+    # If single device object
+    if isinstance(data, dict):
+        return [data]
 
-    params = await client.get_device_parameters(device_id)
+    logger.warning("Unexpected payload type from GenieACS: %s", type(data))
+    return None
 
-    # Debug: show sample parameter keys when missing expected values
-    if not params:
-        logger.debug("No parameters returned for device %s", device_id)
-    else:
-        # Only log sample keys when we don't find expected keys
-        rx_try = find_param(params, CANDIDATE_RX_PATHS)
-        tx_try = find_param(params, CANDIDATE_TX_PATHS)
-        if rx_try is None or tx_try is None:
-            logger.debug("Device %s parameter keys (sample %d): %s", device_id, len(params), list(params.keys())[:80])
-
-    # Use candidate lists to find values
-    rx_val = find_param(params, CANDIDATE_RX_PATHS)
-    tx_val = find_param(params, CANDIDATE_TX_PATHS)
-
-    # Update raw counters (set to 0 if missing)
-    if rx_val is not None:
-        g_rx_bytes.labels(device_id=device_id, serial=serial, ip=ip).set(rx_val)
-    else:
-        logger.debug("Missing RX param for device %s", device_id)
-
-    if tx_val is not None:
-        g_tx_bytes.labels(device_id=device_id, serial=serial, ip=ip).set(tx_val)
-    else:
-        logger.debug("Missing TX param for device %s", device_id)
-
-    # Rate calculation
-    prev = await state_store.get(device_id) or {}
-    prev_ts = prev.get("ts")
-    prev_rx = prev.get("rx")
-    prev_tx = prev.get("tx")
-
-    # If no previous sample, store current and skip rate until next poll
-    if prev_ts is None:
-        await state_store.set(device_id, {"ts": now_ts, "rx": rx_val, "tx": tx_val})
-        g_rx_rate.labels(device_id=device_id, serial=serial, ip=ip).set(0.0)
-        g_tx_rate.labels(device_id=device_id, serial=serial, ip=ip).set(0.0)
-        return
-
-    elapsed = now_ts - prev_ts if prev_ts else None
-    if not elapsed or elapsed <= 0:
-        return
-
-    # RX rate
-    rx_rate_bps = 0.0
-    if rx_val is not None and prev_rx is not None:
-        delta = rx_val - prev_rx
-        if delta < 0:
-            # counter reset or rollover; best-effort assume new value
-            delta = rx_val
-        rx_rate_bps = (delta / elapsed) * 8.0
-        if not math.isfinite(rx_rate_bps) or rx_rate_bps < 0:
-            rx_rate_bps = 0.0
-    else:
-        rx_rate_bps = 0.0
-
-    # TX rate
-    tx_rate_bps = 0.0
-    if tx_val is not None and prev_tx is not None:
-        delta = tx_val - prev_tx
-        if delta < 0:
-            delta = tx_val
-        tx_rate_bps = (delta / elapsed) * 8.0
-        if not math.isfinite(tx_rate_bps) or tx_rate_bps < 0:
-            tx_rate_bps = 0.0
-    else:
-        tx_rate_bps = 0.0
-
-    g_rx_rate.labels(device_id=device_id, serial=serial, ip=ip).set(rx_rate_bps)
-    g_tx_rate.labels(device_id=device_id, serial=serial, ip=ip).set(tx_rate_bps)
-
-    # Persist current sample
-    await state_store.set(device_id, {"ts": now_ts, "rx": rx_val, "tx": tx_val})
-
-async def poll_loop():
-    timeout = ClientTimeout(total=GENIEACS_TIMEOUT)
-    connector = aiohttp.TCPConnector(limit=CONCURRENCY, force_close=False)
-    headers = {"Accept": "application/json"}
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
-        client = GenieACSClient(GENIEACS_API_URL, session)
-        await state_store.init()
-        g_up.set(1)
+# -----------------------
+# Poller
+# -----------------------
+async def poller_loop():
+    logger.info("Starting poller: %s every %ds", GENIEACS_URL, POLL_INTERVAL_SECONDS)
+    connector = aiohttp.TCPConnector(limit=CONCURRENCY_LIMIT)
+    async with aiohttp.ClientSession(connector=connector) as session:
         while True:
-            start = time.time()
-            polled = 0
+            start = datetime.now(timezone.utc)
             try:
-                page = 0
-                devices_this_cycle = []
+                with poll_duration.time():
+                    devices = await fetch_all_devices(session)
+                if devices is None:
+                    poll_success.set(0)
+                    logger.error("No payload from GenieACS")
+                else:
+                    now = datetime.now(timezone.utc)
+                    cutoff = now - timedelta(seconds=ACTIVE_WINDOW_SECONDS)
+                    keep_cutoff = now - timedelta(seconds=KEEP_LAST_KNOWN_SECONDS)
+                    updated: Dict[str, Dict[str, Any]] = {}
+                    parsed_count = 0
+                    sample_examples = []
 
-                # Pagination loop
-                while True:
-                    devices, has_more = await client.list_devices(page=page, limit=BATCH_SIZE, query_filter=DEVICE_QUERY_FILTER)
-                    if not devices:
-                        break
-                    devices_this_cycle.extend(devices)
-                    page += 1
-                    if not has_more:
-                        break
+                    for dev in devices:
+                        try:
+                            device_id = dev.get("_id") or dev.get("id") or dev.get("serialNumber")
+                            if not device_id:
+                                continue
+                            last_inform_dt = parse_last_inform(dev.get("_lastInform") or dev.get("lastInform"))
+                            if last_inform_dt is None:
+                                continue
 
-                polled = len(devices_this_cycle)
-                g_polled_devices.set(polled)
-                now_ts = time.time()
+                            # Prefer the InternetGatewayDevice subtree if present
+                            params = dev.get("InternetGatewayDevice") or dev.get("parameters") or dev.get("data") or dev
 
-                # Process devices in parallel with concurrency control
-                sem = asyncio.Semaphore(CONCURRENCY)
+                            br, bs, found = find_bytes_in_tree(params)
+                            br = br or 0
+                            bs = bs or 0
 
-                async def sem_task(dev):
-                    async with sem:
-                        await process_device(client, dev, now_ts)
+                            is_active = last_inform_dt >= cutoff
 
-                tasks = [asyncio.create_task(sem_task(d)) for d in devices_this_cycle]
-                if tasks:
-                    await asyncio.gather(*tasks)
+                            updated[device_id] = {
+                                "bytes_received": br,
+                                "bytes_sent": bs,
+                                "last_inform": last_inform_dt.isoformat(),
+                                "found_keys": found[:3],
+                                "last_seen": last_inform_dt.isoformat(),
+                                "active": is_active,
+                            }
+                            parsed_count += 1
+                            if len(sample_examples) < 5:
+                                sample_examples.append({"id": device_id, "br": br, "bs": bs, "found": found[:3], "active": is_active})
+                        except Exception:
+                            logger.exception("Error processing device entry")
 
-                logger.info("Polled %d devices in %.2fs", polled, time.time() - start)
-            except Exception as e:
-                logger.exception("Error during poll loop: %s", e)
-                g_up.set(0)
-            # Sleep until next interval, accounting for time spent
-            elapsed = time.time() - start
-            to_sleep = max(0, POLL_INTERVAL - elapsed)
-            await asyncio.sleep(to_sleep)
+                    # Merge with existing to keep last-known values for devices not present in this poll
+                    async with device_metrics_lock:
+                        merged = dict(updated)  # start with freshly seen devices
+                        for dev_id, old in device_metrics.items():
+                            if dev_id in merged:
+                                continue
+                            # determine old last seen
+                            old_last_iso = old.get("last_seen") or old.get("last_inform")
+                            old_last = parse_last_inform(old_last_iso) if old_last_iso else None
+                            if old_last:
+                                # if old_last is within KEEP_LAST_KNOWN_SECONDS, keep last-known values
+                                if old_last >= keep_cutoff:
+                                    # preserve bytes and last_seen, but mark active depending on cutoff
+                                    preserved = dict(old)
+                                    preserved["active"] = True if old_last >= cutoff else False
+                                    merged[dev_id] = preserved
+                                else:
+                                    # older than keep window: keep last-known but mark inactive
+                                    preserved = dict(old)
+                                    preserved["active"] = False
+                                    merged[dev_id] = preserved
+                            else:
+                                # no timestamp: keep as-is but mark inactive
+                                preserved = dict(old)
+                                preserved["active"] = False
+                                merged[dev_id] = preserved
 
-# ---------------------------
-# Entrypoint
-# ---------------------------
-def main():
-    logger.info("Starting GenieACS Prometheus exporter on :%d", EXPORTER_PORT)
-    start_http_server(EXPORTER_PORT)
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(poll_loop())
-    except KeyboardInterrupt:
-        logger.info("Shutting down exporter")
-    finally:
-        loop.run_until_complete(state_store.close())
+                        # atomic replace
+                        device_metrics.clear()
+                        device_metrics.update(merged)
 
+                    active_count = sum(1 for v in merged.values() if v.get("active"))
+                    active_devices_g.set(active_count)
+                    poll_success.set(1)
+                    logger.info("Poll complete: active=%d parsed=%d examples=%s", active_count, parsed_count, sample_examples)
+            except Exception:
+                poll_success.set(0)
+                logger.exception("Unhandled exception in poller loop")
+            # sleep until next poll
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+# -----------------------
+# FastAPI app and endpoints
+# -----------------------
+app = FastAPI(title="GenieACS Prometheus Exporter")
+
+@app.on_event("startup")
+async def startup_event():
+    # start poller
+    asyncio.create_task(poller_loop())
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "active_devices": len(device_metrics)}
+
+@app.get("/debug/sample")
+async def debug_sample():
+    # return first 10 parsed entries for inspection
+    async with device_metrics_lock:
+        items = list(device_metrics.items())[:10]
+    return {"sample_parsed": items}
+
+@app.get("/metrics")
+async def metrics():
+    # combine device metrics (REGISTRY) and internal metrics (PROM_REG)
+    data = generate_latest(REGISTRY) + generate_latest(PROM_REG)
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+# -----------------------
+# Run with:
+# uvicorn exp:app --host 0.0.0.0 --port 9406
+# -----------------------
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run("exp:app", host="0.0.0.0", port=int(os.getenv("PORT", "9406")), log_level="info")
